@@ -1,0 +1,29 @@
+{
+  "name": "logpiper",
+  "version": "1.0.0",
+  "description": "MCP server for streaming terminal command logs with proactive error notifications",
+  "main": "dist/server.js",
+  "type": "module",
+  "bin": {
+    "logpiper": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/server.js",
+    "cli": "node dist/cli.js"
+  },
+  "keywords": ["mcp", "logs", "terminal", "debugging", "ai"],
+  "author": "Ivan",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

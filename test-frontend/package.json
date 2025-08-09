@@ -1,0 +1,6 @@
+{
+  "name": "test-frontend",
+  "scripts": {
+    "dev": "node mock-dev-server.js"
+  }
+}

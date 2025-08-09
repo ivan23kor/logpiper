@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "logpiper": {
+      "command": "node",
+      "args": ["C:\\Users\\Ivan\\Desktop\\logpiper\\dist\\server.js"],
+      "env": {
+        "NODE_ENV": "production"
+      }
+    }
+  }
+}

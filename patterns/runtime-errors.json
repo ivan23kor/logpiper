@@ -1,0 +1,74 @@
+{
+  "patterns": [
+    {
+      "name": "javascript_runtime_error",
+      "pattern": "(?:ReferenceError|TypeError|RangeError|null is not an object|Cannot read propert)",
+      "severity": "high",
+      "category": "runtime_error",
+      "description": "JavaScript runtime error",
+      "suggestedFix": "Check variable definitions and object property access",
+      "cooldownMs": 8000,
+      "commands": ["node", "npm", "yarn"]
+    },
+    {
+      "name": "python_runtime_error",
+      "pattern": "(?:NameError|AttributeError|IndexError|KeyError|ValueError)",
+      "severity": "high",
+      "category": "runtime_error",
+      "description": "Python runtime error",
+      "suggestedFix": "Check variable names and data structure access",
+      "cooldownMs": 8000,
+      "commands": ["python", "python3", "pip"]
+    },
+    {
+      "name": "python_import_error",
+      "pattern": "(?:ImportError|ModuleNotFoundError|No module named)",
+      "severity": "high",
+      "category": "dependency_error",
+      "description": "Python import error",
+      "suggestedFix": "Install missing packages or check PYTHONPATH",
+      "cooldownMs": 15000,
+      "commands": ["python", "python3", "pip"]
+    },
+    {
+      "name": "node_uncaught_exception",
+      "pattern": "(?:Uncaught Exception|UnhandledPromiseRejectionWarning|Promise.*rejected)",
+      "severity": "critical",
+      "category": "runtime_error",
+      "description": "Unhandled Node.js exception",
+      "suggestedFix": "Add proper error handling and promise catches",
+      "cooldownMs": 5000,
+      "commands": ["node", "npm", "yarn"]
+    },
+    {
+      "name": "memory_error",
+      "pattern": "(?:Out of memory|ENOMEM|JavaScript heap out of memory|MemoryError)",
+      "severity": "critical",
+      "category": "system_error",
+      "description": "Memory allocation error",
+      "suggestedFix": "Optimize memory usage or increase available memory",
+      "cooldownMs": 30000,
+      "commands": ["node", "npm", "python", "java"]
+    },
+    {
+      "name": "stack_overflow",
+      "pattern": "(?:Maximum call stack size exceeded|RecursionError|StackOverflowError)",
+      "severity": "high",
+      "category": "runtime_error",
+      "description": "Stack overflow error",
+      "suggestedFix": "Check for infinite recursion or reduce call stack depth",
+      "cooldownMs": 10000,
+      "commands": ["node", "python", "java"]
+    },
+    {
+      "name": "async_error",
+      "pattern": "(?:Promise.*rejected|async.*await.*error|Uncaught.*async)",
+      "severity": "high",
+      "category": "runtime_error",
+      "description": "Async operation error",
+      "suggestedFix": "Add proper async/await error handling",
+      "cooldownMs": 10000,
+      "commands": ["node", "npm", "yarn"]
+    }
+  ]
+}
