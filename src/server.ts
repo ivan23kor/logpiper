@@ -160,6 +160,16 @@ class LogPiperMCPServer {
                   description: 'Filter sessions by status',
                   default: 'all',
                 },
+                limit: {
+                  type: 'number',
+                  description: 'Maximum number of sessions to return',
+                  default: 100,
+                },
+                offset: {
+                  type: 'number',
+                  description: 'Number of sessions to skip (for pagination)',
+                  default: 0,
+                },
               },
             },
           },
@@ -195,6 +205,11 @@ class LogPiperMCPServer {
                   type: 'number',
                   description: 'Maximum number of results to return',
                   default: 50,
+                },
+                offset: {
+                  type: 'number',
+                  description: 'Number of results to skip (for pagination)',
+                  default: 0,
                 },
               },
               required: ['query'],
@@ -268,14 +283,18 @@ class LogPiperMCPServer {
 
     if (sessionId) {
       const newLogs = this.logManager.getNewLogs(sessionId, since);
+      const paginatedLogs = newLogs.slice(0, limit);
+      const hasMore = newLogs.length > limit;
+      
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             sessionId,
-            logs: newLogs.slice(0, limit),
-            nextCursor: newLogs.length > 0 ? Math.max(...newLogs.map(l => l.lineNumber)) : since,
-            hasMore: newLogs.length > limit,
+            logs: paginatedLogs,
+            total: newLogs.length,
+            nextCursor: paginatedLogs.length > 0 ? Math.max(...paginatedLogs.map(l => l.lineNumber)) : since,
+            hasMore,
           }, null, 2),
         }],
       };
@@ -289,37 +308,52 @@ class LogPiperMCPServer {
       });
 
       allNewLogs.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      
+      const paginatedLogs = allNewLogs.slice(0, limit);
+      const hasMore = allNewLogs.length > limit;
 
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
-            logs: allNewLogs.slice(0, limit),
-            nextCursor: allNewLogs.length > 0 ? Math.max(...allNewLogs.map(l => l.lineNumber)) : since,
-            hasMore: allNewLogs.length > limit,
+            logs: paginatedLogs,
+            total: allNewLogs.length,
+            nextCursor: paginatedLogs.length > 0 ? Math.max(...paginatedLogs.map(l => l.lineNumber)) : since,
+            hasMore,
           }, null, 2),
         }],
       };
     }
   }
 
-  private async handleListSessions(args: { status?: string }) {
-    const { status = 'all' } = args;
+  private async handleListSessions(args: { 
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const { status = 'all', limit = 100, offset = 0 } = args;
     let sessions = this.logManager.listSessions();
 
     if (status !== 'all') {
       sessions = sessions.filter(s => s.status === status);
     }
 
+    const paginatedSessions = sessions.slice(offset, offset + limit);
+    const hasMore = offset + limit < sessions.length;
+
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
-          sessions: sessions.map(session => ({
+          sessions: paginatedSessions.map(session => ({
             ...session,
             stats: this.logManager.getSessionStats(session.id),
           })),
           total: sessions.length,
+          offset,
+          limit,
+          hasMore,
+          nextOffset: hasMore ? offset + limit : null,
         }, null, 2),
       }],
     };
@@ -352,19 +386,27 @@ class LogPiperMCPServer {
     sessionId?: string; 
     query: string; 
     limit?: number; 
+    offset?: number; 
   }) {
-    const { sessionId, query, limit = 50 } = args;
+    const { sessionId, query, limit = 50, offset = 0 } = args;
 
     if (sessionId) {
       const results = this.logManager.searchLogs(sessionId, query);
+      const paginatedResults = results.slice(offset, offset + limit);
+      const hasMore = offset + limit < results.length;
+      
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             sessionId,
             query,
-            results: results.slice(0, limit),
+            results: paginatedResults,
             total: results.length,
+            offset,
+            limit,
+            hasMore,
+            nextOffset: hasMore ? offset + limit : null,
           }, null, 2),
         }],
       };
@@ -378,14 +420,21 @@ class LogPiperMCPServer {
       });
 
       allResults.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+      
+      const paginatedResults = allResults.slice(offset, offset + limit);
+      const hasMore = offset + limit < allResults.length;
 
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             query,
-            results: allResults.slice(0, limit),
+            results: paginatedResults,
             total: allResults.length,
+            offset,
+            limit,
+            hasMore,
+            nextOffset: hasMore ? offset + limit : null,
           }, null, 2),
         }],
       };
