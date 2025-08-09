@@ -20,6 +20,10 @@ class LogPiperCLI {
   private session: LogSession;
   private lineNumber: number = 0;
   private dataDir: string;
+  private chunkBuffer: string[] = [];
+  private chunkLevel: 'stdout' | 'stderr' | null = null;
+  private chunkTimer: NodeJS.Timeout | null = null;
+  private readonly chunkDelay = 100; // ms
 
   constructor(config: LogPiperConfig = {}) {
     this.config = {
@@ -123,18 +127,51 @@ class LogPiperCLI {
     const content = data.toString();
     const lines = content.split('\n').filter(line => line.length > 0);
 
+    // Display output immediately for real-time feedback
     for (const line of lines) {
-      const logEntry = this.createLogEntry(line, logLevel);
-      
-      await this.sendToMCPServer({
-        type: 'log_entry',
-        data: logEntry
-      });
-
       console.log(line);
     }
 
+    // Add to chunk buffer
+    this.addToChunk(lines, logLevel);
     this.session.lastActivity = new Date();
+  }
+
+  private addToChunk(lines: string[], logLevel: 'stdout' | 'stderr'): void {
+    // If this is a different log level than current chunk, flush and start new chunk
+    if (this.chunkLevel !== null && this.chunkLevel !== logLevel) {
+      this.flushChunk();
+    }
+
+    // Add lines to buffer
+    this.chunkBuffer.push(...lines);
+    this.chunkLevel = logLevel;
+
+    // Reset/set timer to flush chunk after delay
+    if (this.chunkTimer) {
+      clearTimeout(this.chunkTimer);
+    }
+    
+    this.chunkTimer = setTimeout(() => {
+      this.flushChunk();
+    }, this.chunkDelay);
+  }
+
+  private async flushChunk(): Promise<void> {
+    if (this.chunkBuffer.length === 0) return;
+
+    const combinedContent = this.chunkBuffer.join('\n');
+    const logEntry = this.createLogEntry(combinedContent, this.chunkLevel!);
+    
+    await this.sendToMCPServer({
+      type: 'log_entry',
+      data: logEntry
+    });
+
+    // Reset chunk state
+    this.chunkBuffer = [];
+    this.chunkLevel = null;
+    this.chunkTimer = null;
   }
 
   async run(): Promise<void> {
@@ -164,6 +201,9 @@ class LogPiperCLI {
     });
 
     child.on('close', async (code, signal) => {
+      // Flush any remaining chunk before ending session
+      await this.flushChunk();
+      
       this.session.status = code === 0 ? 'stopped' : 'crashed';
       this.session.endTime = new Date();
 
@@ -182,6 +222,9 @@ class LogPiperCLI {
     });
 
     child.on('error', async (error) => {
+      // Flush any remaining chunk before crashing
+      await this.flushChunk();
+      
       this.session.status = 'crashed';
       
       await this.sendToMCPServer({
@@ -199,6 +242,9 @@ class LogPiperCLI {
 
     process.on('SIGINT', async () => {
       console.log('\n⏹️  Stopping logpiper...');
+      
+      // Flush any remaining chunk before interrupting
+      await this.flushChunk();
       
       child.kill('SIGTERM');
       

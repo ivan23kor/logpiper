@@ -181,7 +181,7 @@ export class LogManager implements SessionManager, LogStorage {
   }
 
   getRecentLogs(sessionId: string, limit: number = 50): LogEntry[] {
-    const sessionLogs = this.logs.get(sessionId) || [];
+    const sessionLogs = this.getAllLogs(sessionId);
     return sessionLogs.slice(-limit);
   }
 
@@ -190,17 +190,17 @@ export class LogManager implements SessionManager, LogStorage {
     startTime: Date, 
     endTime: Date
   ): LogEntry[] {
-    const sessionLogs = this.logs.get(sessionId) || [];
+    const sessionLogs = this.getAllLogs(sessionId);
     
-    return sessionLogs.filter(log => 
+    return sessionLogs.filter((log: LogEntry) => 
       log.timestamp >= startTime && log.timestamp <= endTime
     );
   }
 
   getLogsByLevel(sessionId: string, levels: string[]): LogEntry[] {
-    const sessionLogs = this.logs.get(sessionId) || [];
+    const sessionLogs = this.getAllLogs(sessionId);
     
-    return sessionLogs.filter(log => levels.includes(log.logLevel));
+    return sessionLogs.filter((log: LogEntry) => levels.includes(log.logLevel));
   }
 
   exportSessionLogs(sessionId: string): {
@@ -214,7 +214,7 @@ export class LogManager implements SessionManager, LogStorage {
       uptime: number;
     };
   } | null {
-    const session = this.sessions.get(sessionId);
+    const session = this.getSession(sessionId);
     if (!session) return null;
 
     return {
@@ -225,19 +225,9 @@ export class LogManager implements SessionManager, LogStorage {
   }
 
   cleanup(): void {
-    const cutoffTime = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24 hours ago
-    
-    const sessionsToRemove: string[] = [];
-    
-    for (const [sessionId, session] of this.sessions) {
-      if (session.status !== 'running' && session.lastActivity < cutoffTime) {
-        sessionsToRemove.push(sessionId);
-      }
-    }
-
-    sessionsToRemove.forEach(sessionId => {
-      this.removeSession(sessionId);
-    });
+    // File-based cleanup would require removing old session files
+    // This method exists for interface compatibility
+    // Could implement by scanning dataDir for old files
   }
 
   getSessionsOverview(): {
@@ -271,7 +261,7 @@ export class LogManager implements SessionManager, LogStorage {
     const allLogs: LogEntry[] = [];
 
     sessionIds.forEach(sessionId => {
-      const sessionLogs = this.logs.get(sessionId) || [];
+      const sessionLogs = this.getAllLogs(sessionId);
       allLogs.push(...sessionLogs);
     });
 
