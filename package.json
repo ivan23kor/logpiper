@@ -27,8 +27,7 @@
   "license": "MIT",
   "files": [
     "dist",
-    "scripts",
-    "log-monitor-guardian.md"
+    "scripts"
   ],
   "repository": {
     "type": "git",
