@@ -47,7 +47,7 @@ class LogPiperMcpServer {
 
   private setupRequestHandlers(): void {
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
-      const sessions = this.logManager.listSessions();
+      const sessions = this.logManager.getActiveSessions();
 
       return {
         resources: sessions.map(session => ({
@@ -336,6 +336,70 @@ class LogPiperMcpServer {
               required: ['sessionId'],
             },
           },
+          {
+            name: 'reset_all_sessions',
+            description: 'Reset all sessions and logs - completely clears all LogPiper data',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                confirm: {
+                  type: 'boolean',
+                  description: 'Must be set to true to confirm the destructive operation',
+                },
+              },
+              required: ['confirm'],
+            },
+          },
+          {
+            name: 'reset_session',
+            description: 'Reset a specific session - removes session and its logs',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                sessionId: {
+                  type: 'string',
+                  description: 'Session ID to reset',
+                },
+              },
+              required: ['sessionId'],
+            },
+          },
+          {
+            name: 'clear_session_logs',
+            description: 'Clear logs for a session while keeping session metadata',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                sessionId: {
+                  type: 'string',
+                  description: 'Session ID to clear logs for',
+                },
+              },
+              required: ['sessionId'],
+            },
+          },
+          {
+            name: 'reset_sessions_by_criteria',
+            description: 'Reset sessions matching specific criteria',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                status: {
+                  type: 'string',
+                  enum: ['running', 'stopped', 'crashed'],
+                  description: 'Reset sessions with this status',
+                },
+                olderThanDays: {
+                  type: 'number',
+                  description: 'Reset sessions older than this many days',
+                },
+                projectDir: {
+                  type: 'string',
+                  description: 'Reset sessions from this project directory',
+                },
+              },
+            },
+          },
         ],
       };
     });
@@ -360,6 +424,14 @@ class LogPiperMcpServer {
           return this.handleGetLogsPaginated(args as any);
         case 'get_recent_logs':
           return this.handleGetRecentLogs(args as any);
+        case 'reset_all_sessions':
+          return this.handleResetAllSessions(args as any);
+        case 'reset_session':
+          return this.handleResetSession(args as any);
+        case 'clear_session_logs':
+          return this.handleClearSessionLogs(args as any);
+        case 'reset_sessions_by_criteria':
+          return this.handleResetSessionsByCriteria(args as any);
         default:
           throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
       }
@@ -506,7 +578,7 @@ class LogPiperMcpServer {
         }],
       };
     } else {
-      const sessions = this.logManager.listSessions();
+      const sessions = this.logManager.getActiveSessions();
       const allResults: LogEntry[] = [];
       let totalCount = 0;
 
@@ -621,6 +693,103 @@ class LogPiperMcpServer {
           prevCursor: result.prevCursor,
           hasMore: result.hasMore,
           hasPrevious: result.hasPrevious,
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async handleResetAllSessions(args: { confirm: boolean }) {
+    const { confirm } = args;
+
+    if (!confirm) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            message: 'Reset operation cancelled - confirm parameter must be set to true',
+            warning: 'This operation will delete ALL sessions and logs permanently',
+          }, null, 2),
+        }],
+      };
+    }
+
+    const result = this.logManager.resetAllSessions();
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ...result,
+          operation: 'reset_all_sessions',
+          timestamp: new Date().toISOString(),
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async handleResetSession(args: { sessionId: string }) {
+    const { sessionId } = args;
+    const result = this.logManager.resetSession(sessionId);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ...result,
+          operation: 'reset_session',
+          sessionId,
+          timestamp: new Date().toISOString(),
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async handleClearSessionLogs(args: { sessionId: string }) {
+    const { sessionId } = args;
+    const result = this.logManager.clearSessionLogs(sessionId);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ...result,
+          operation: 'clear_session_logs',
+          sessionId,
+          timestamp: new Date().toISOString(),
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async handleResetSessionsByCriteria(args: {
+    status?: 'running' | 'stopped' | 'crashed';
+    olderThanDays?: number;
+    projectDir?: string;
+  }) {
+    const { status, olderThanDays, projectDir } = args;
+
+    const criteria: any = {};
+    if (status) criteria.status = status;
+    if (projectDir) criteria.projectDir = projectDir;
+    if (olderThanDays !== undefined) {
+      criteria.olderThan = new Date(Date.now() - (olderThanDays * 24 * 60 * 60 * 1000));
+    }
+
+    const result = this.logManager.resetSessionsByCriteria(criteria);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ...result,
+          operation: 'reset_sessions_by_criteria',
+          criteria: {
+            status,
+            olderThanDays,
+            projectDir,
+          },
+          timestamp: new Date().toISOString(),
         }, null, 2),
       }],
     };

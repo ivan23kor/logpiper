@@ -5,7 +5,7 @@ import type {
   LogStorage,
   PaginationResult
 } from './types.js';
-import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
+import { readdirSync, readFileSync, existsSync, statSync, unlinkSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { LogReader } from './log-reader.js';
@@ -253,6 +253,245 @@ export class LogManager implements SessionManager, LogStorage {
     // File-based cleanup would require removing old session files
     // This method exists for interface compatibility
     // Could implement by scanning dataDir for old files
+  }
+
+  /**
+   * Reset all sessions and logs - removes all data from the logpiper directory
+   */
+  resetAllSessions(): {
+    success: boolean;
+    message: string;
+    deletedSessions: number;
+    deletedLogFiles: number;
+    errors: string[];
+  } {
+    const result = {
+      success: false,
+      message: '',
+      deletedSessions: 0,
+      deletedLogFiles: 0,
+      errors: [] as string[]
+    };
+
+    try {
+      if (!existsSync(this.dataDir)) {
+        result.success = true;
+        result.message = 'No data directory found - nothing to reset';
+        return result;
+      }
+
+      const files = readdirSync(this.dataDir);
+      
+      for (const file of files) {
+        const filePath = join(this.dataDir, file);
+        
+        try {
+          if (file.endsWith('.json')) {
+            unlinkSync(filePath);
+            result.deletedSessions++;
+          } else if (file.endsWith('.logs')) {
+            unlinkSync(filePath);
+            result.deletedLogFiles++;
+          } else {
+            // Remove any other files in the directory
+            unlinkSync(filePath);
+          }
+        } catch (fileError) {
+          result.errors.push(`Failed to delete ${file}: ${fileError}`);
+        }
+      }
+
+      result.success = result.errors.length === 0;
+      result.message = result.success 
+        ? `Successfully reset all sessions. Deleted ${result.deletedSessions} sessions and ${result.deletedLogFiles} log files.`
+        : `Partially completed reset with ${result.errors.length} errors. Deleted ${result.deletedSessions} sessions and ${result.deletedLogFiles} log files.`;
+
+    } catch (error) {
+      result.success = false;
+      result.message = `Failed to reset sessions: ${error}`;
+      result.errors.push(`Directory scan error: ${error}`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Reset specific session - removes session and its logs
+   */
+  resetSession(sessionId: string): {
+    success: boolean;
+    message: string;
+    sessionDeleted: boolean;
+    logsDeleted: boolean;
+    errors: string[];
+  } {
+    const result = {
+      success: false,
+      message: '',
+      sessionDeleted: false,
+      logsDeleted: false,
+      errors: [] as string[]
+    };
+
+    try {
+      const sessionFile = join(this.dataDir, `${sessionId}.json`);
+      const logsFile = join(this.dataDir, `${sessionId}.logs`);
+
+      // Delete session file
+      if (existsSync(sessionFile)) {
+        try {
+          unlinkSync(sessionFile);
+          result.sessionDeleted = true;
+        } catch (error) {
+          result.errors.push(`Failed to delete session file: ${error}`);
+        }
+      }
+
+      // Delete logs file
+      if (existsSync(logsFile)) {
+        try {
+          unlinkSync(logsFile);
+          result.logsDeleted = true;
+        } catch (error) {
+          result.errors.push(`Failed to delete logs file: ${error}`);
+        }
+      }
+
+      if (!result.sessionDeleted && !result.logsDeleted) {
+        result.message = `Session ${sessionId} not found`;
+        result.success = true; // Not an error if session doesn't exist
+      } else {
+        result.success = result.errors.length === 0;
+        const deletedItems = [];
+        if (result.sessionDeleted) deletedItems.push('session');
+        if (result.logsDeleted) deletedItems.push('logs');
+        
+        result.message = result.success
+          ? `Successfully deleted ${deletedItems.join(' and ')} for session ${sessionId}`
+          : `Partially completed deletion with ${result.errors.length} errors`;
+      }
+
+    } catch (error) {
+      result.success = false;
+      result.message = `Failed to reset session ${sessionId}: ${error}`;
+      result.errors.push(`Reset error: ${error}`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Clear logs for a specific session (keep session metadata)
+   */
+  clearSessionLogs(sessionId: string): {
+    success: boolean;
+    message: string;
+    logsDeleted: boolean;
+    errors: string[];
+  } {
+    const result = {
+      success: false,
+      message: '',
+      logsDeleted: false,
+      errors: [] as string[]
+    };
+
+    try {
+      const logsFile = join(this.dataDir, `${sessionId}.logs`);
+
+      if (existsSync(logsFile)) {
+        try {
+          unlinkSync(logsFile);
+          result.logsDeleted = true;
+          result.success = true;
+          result.message = `Successfully cleared logs for session ${sessionId}`;
+        } catch (error) {
+          result.errors.push(`Failed to delete logs file: ${error}`);
+          result.message = `Failed to clear logs for session ${sessionId}: ${error}`;
+        }
+      } else {
+        result.success = true;
+        result.message = `No logs found for session ${sessionId}`;
+      }
+
+    } catch (error) {
+      result.success = false;
+      result.message = `Failed to clear logs for session ${sessionId}: ${error}`;
+      result.errors.push(`Clear logs error: ${error}`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Reset sessions by criteria (status, age, etc.)
+   */
+  resetSessionsByCriteria(criteria: {
+    status?: 'running' | 'stopped' | 'crashed';
+    olderThan?: Date;
+    projectDir?: string;
+  }): {
+    success: boolean;
+    message: string;
+    deletedSessions: number;
+    deletedLogFiles: number;
+    errors: string[];
+    deletedSessionIds: string[];
+  } {
+    const result = {
+      success: false,
+      message: '',
+      deletedSessions: 0,
+      deletedLogFiles: 0,
+      errors: [] as string[],
+      deletedSessionIds: [] as string[]
+    };
+
+    try {
+      const allSessions = this.listSessions();
+      const sessionsToDelete = allSessions.filter(session => {
+        // Filter by status
+        if (criteria.status && session.status !== criteria.status) {
+          return false;
+        }
+
+        // Filter by age
+        if (criteria.olderThan && session.lastActivity > criteria.olderThan) {
+          return false;
+        }
+
+        // Filter by project directory
+        if (criteria.projectDir && session.projectDir !== criteria.projectDir) {
+          return false;
+        }
+
+        return true;
+      });
+
+      for (const session of sessionsToDelete) {
+        const resetResult = this.resetSession(session.id);
+        
+        if (resetResult.success) {
+          result.deletedSessionIds.push(session.id);
+          if (resetResult.sessionDeleted) result.deletedSessions++;
+          if (resetResult.logsDeleted) result.deletedLogFiles++;
+        } else {
+          result.errors.push(...resetResult.errors);
+        }
+      }
+
+      result.success = result.errors.length === 0;
+      result.message = result.success
+        ? `Successfully reset ${sessionsToDelete.length} sessions matching criteria`
+        : `Partially completed reset with ${result.errors.length} errors. Reset ${result.deletedSessionIds.length} sessions.`;
+
+    } catch (error) {
+      result.success = false;
+      result.message = `Failed to reset sessions by criteria: ${error}`;
+      result.errors.push(`Criteria reset error: ${error}`);
+    }
+
+    return result;
   }
 
   getSessionsOverview(): {
