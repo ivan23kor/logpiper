@@ -24,11 +24,18 @@ npm run build
 npm link
 ```
 
+### Installing the Log Monitor Guardian Agent
+
+For automatic log monitoring with Claude Code, install the `log-monitor-guardian` agent by copying the `log-monitor-guardian.md` file to your Claude Code agents directory:
+```bash
+cp log-monitor-guardian.md ~/.claude/agents/
+```
+
 ## Usage
 
 ### 1. Start the MCP Server
 
-Configure Claude Code to use the LogPiper MCP server by adding to your `claude_desktop_config.json`:
+Configure Claude Code to use the LogPiper MCP server by adding to your `~/.claude/settings.json`:
 
 ```json
 {
@@ -45,65 +52,40 @@ Configure Claude Code to use the LogPiper MCP server by adding to your `claude_d
 
 Start monitoring any command by prefixing it with `logpiper`:
 
+#### Testing and CI/CD
 ```bash
-# Monitor development server
-logpiper npm run dev
-
-# Monitor Docker Compose logs
-logpiper docker-compose logs backend -f
-
-# Monitor test execution  
+# Monitor test suites
 logpiper npm test
+logpiper npm run test:watch
+logpiper npm run test:e2e
 
-# Monitor Python script
-logpiper python app.py
+# Monitor build processes
+logpiper npm run build
+logpiper npm run build:prod
 ```
 
-### 3. Claude Code Integration
+#### Docker and Container Monitoring
+```bash
+# Monitor Docker Compose services
+logpiper docker-compose up
+logpiper docker-compose logs -f backend
 
-Once set up, Claude Code can:
+# Monitor individual containers
+logpiper docker logs -f container_name
+```
 
-- **View Live Logs**: `get_new_logs` - Stream only new logs since last read
-- **List Sessions**: `list_sessions` - See all active monitoring sessions
-- **Search Logs**: `search_logs` - Find specific errors or patterns
-- **Get Alerts**: Receive proactive notifications when errors occur
+#### Database and Backend Services
+```bash
+# Monitor Python applications
+logpiper python app.py
+logpiper uvicorn main:app --reload
 
-## Example Workflow
+# Monitor Node.js servers
+logpiper node server.js
+logpiper nodemon app.js
+```
 
-1. **Start Monitoring**:
-   ```bash
-   # Terminal 1
-   logpiper npm run dev
-   
-   # Terminal 2  
-   logpiper docker-compose logs backend -f
-   ```
-
-2. **Error Detection**: When a TypeScript compilation error occurs, Claude Code automatically receives:
-   ```json
-   {
-     "severity": "critical",
-     "category": "build_failure", 
-     "summary": "npm build failed in /path/to/project",
-     "details": {
-       "firstError": "Property 'user' does not exist on type 'Props'",
-       "context": ["src/components/UserProfile.tsx:15:7"],
-       "suggestedFix": "Add 'user' property to Props interface"
-     },
-     "actions": [
-       {"type": "view_logs", "label": "View Full Logs"},
-       {"type": "open_file", "label": "Open UserProfile.tsx", "path": "src/components/UserProfile.tsx:15"}
-     ]
-   }
-   ```
-
-3. **Claude Code Response**: Claude Code can immediately:
-   - Open the problematic file
-   - Analyze the error context  
-   - Suggest and implement fixes
-   - Monitor for resolution
-
-## MCP Tools Available
+### 3. MCP Tools Available
 
 | Tool | Description | Usage |
 |------|-------------|-------|
@@ -113,45 +95,6 @@ Once set up, Claude Code can:
 | `search_logs` | Search through logs | Error investigation |
 | `acknowledge_error` | Mark errors as seen | Error management |
 | `get_error_history` | View recent errors | Error tracking |
-
-## Supported Error Patterns
-
-- **Build Failures**: TypeScript, Webpack, Babel, Vite, Rollup
-- **Test Failures**: Jest, Mocha, Cypress, Playwright, Vitest  
-- **Runtime Errors**: JavaScript/Python exceptions, memory issues
-- **Docker Issues**: Build failures, daemon errors, container crashes
-- **Dependency Problems**: Missing modules, version conflicts
-
-## Architecture
-
-```
-logpiper/
-├── src/
-│   ├── cli.ts           # Command wrapper CLI
-│   ├── server.ts        # MCP server core
-│   ├── error-detector.ts # Smart error analysis
-│   ├── notification.ts  # Proactive alerts
-│   ├── log-manager.ts   # Session & log management  
-│   └── types.ts         # TypeScript interfaces
-├── patterns/           # Error pattern configurations
-└── dist/              # Compiled JavaScript
-```
-
-## Session Management
-
-Each `logpiper` command creates a unique session:
-
-- **Session ID**: `project_command_timestamp`  
-- **Metadata**: Project directory, command, arguments
-- **Streaming**: Only new logs delivered via cursors
-- **Multi-Session**: Handle concurrent monitoring
-
-## Error Detection Intelligence
-
-- **Pattern Matching**: Regex + command-specific analyzers
-- **Rate Limiting**: Anti-spam with cooldown periods
-- **Batch Processing**: Group related errors intelligently  
-- **Context Extraction**: File paths, stack traces, suggestions
 
 ## Contributing
 
