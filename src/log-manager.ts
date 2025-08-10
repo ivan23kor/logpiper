@@ -2,18 +2,25 @@ import type {
   LogEntry,
   LogSession,
   SessionManager,
-  LogStorage
+  LogStorage,
+  PaginationResult
 } from './types.js';
 import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { LogReader } from './log-reader.js';
 
 export class LogManager implements SessionManager, LogStorage {
   private dataDir: string;
   private maxLogsPerSession: number = 10000;
+  private logReader: LogReader;
 
   constructor() {
     this.dataDir = join(tmpdir(), 'logpiper');
+    this.logReader = new LogReader({
+      maxChunkSize: 1024 * 1024, // 1MB
+      defaultLimit: 100,
+    });
   }
 
   createSession(projectDir: string, command: string, args: string[]): LogSession {
@@ -111,7 +118,13 @@ export class LogManager implements SessionManager, LogStorage {
     // This method exists for interface compatibility
   }
 
-  getNewLogs(sessionId: string, since: number): LogEntry[] {
+  async getNewLogs(sessionId: string, since: number, limit?: number): Promise<PaginationResult<LogEntry>> {
+    const logsFile = join(this.dataDir, `${sessionId}.logs`);
+    return this.logReader.getNewLogs(logsFile, since, limit);
+  }
+
+  // Legacy sync method for backward compatibility
+  getNewLogsSync(sessionId: string, since: number): LogEntry[] {
     const allLogs = this.getAllLogs(sessionId);
     return allLogs.filter(log => log.lineNumber > since);
   }
@@ -135,7 +148,13 @@ export class LogManager implements SessionManager, LogStorage {
     }
   }
 
-  searchLogs(sessionId: string, query: string): LogEntry[] {
+  async searchLogs(sessionId: string, query: string, cursor?: number, limit?: number): Promise<PaginationResult<LogEntry>> {
+    const logsFile = join(this.dataDir, `${sessionId}.logs`);
+    return this.logReader.searchLogsPaginated(logsFile, query, cursor, limit);
+  }
+
+  // Legacy sync method for backward compatibility
+  searchLogsSync(sessionId: string, query: string): LogEntry[] {
     const allLogs = this.getAllLogs(sessionId);
     const lowerQuery = query.toLowerCase();
 
@@ -145,7 +164,13 @@ export class LogManager implements SessionManager, LogStorage {
     );
   }
 
-  getLogCount(sessionId: string): number {
+  async getLogCount(sessionId: string): Promise<number> {
+    const logsFile = join(this.dataDir, `${sessionId}.logs`);
+    return this.logReader.getLogCount(logsFile);
+  }
+
+  // Legacy sync method for backward compatibility
+  getLogCountSync(sessionId: string): number {
     return this.getAllLogs(sessionId).length;
   }
 
@@ -280,5 +305,109 @@ export class LogManager implements SessionManager, LogStorage {
     return this.listSessions().filter(session =>
       session.command === command
     );
+  }
+
+  // New paginated methods for efficient log handling
+
+  /**
+   * Get logs with pagination support
+   */
+  async getLogsPaginated(
+    sessionId: string,
+    cursor: number = 0,
+    limit: number = 100,
+    reverse: boolean = false
+  ): Promise<PaginationResult<LogEntry>> {
+    const logsFile = join(this.dataDir, `${sessionId}.logs`);
+    return this.logReader.readLogsPaginated(logsFile, cursor, limit, reverse);
+  }
+
+  /**
+   * Get recent logs (latest first) with pagination
+   */
+  async getRecentLogsPaginated(
+    sessionId: string,
+    limit: number = 50
+  ): Promise<PaginationResult<LogEntry>> {
+    const logsFile = join(this.dataDir, `${sessionId}.logs`);
+    return this.logReader.readLogsPaginated(logsFile, 0, limit, true);
+  }
+
+  /**
+   * Get logs by time range with pagination
+   */
+  async getLogsByTimeRangePaginated(
+    sessionId: string,
+    startTime: Date,
+    endTime: Date,
+    cursor: number = 0,
+    limit: number = 100
+  ): Promise<PaginationResult<LogEntry>> {
+    // For time range queries, we'll first get all logs in cursor range
+    // then filter by time range
+    const result = await this.getLogsPaginated(sessionId, cursor, limit);
+    
+    const filteredLogs = result.data.filter(log =>
+      log.timestamp >= startTime && log.timestamp <= endTime
+    );
+
+    return {
+      ...result,
+      data: filteredLogs,
+    };
+  }
+
+  /**
+   * Get logs by level with pagination
+   */
+  async getLogsByLevelPaginated(
+    sessionId: string,
+    levels: string[],
+    cursor: number = 0,
+    limit: number = 100
+  ): Promise<PaginationResult<LogEntry>> {
+    // For level filtering, we'll get logs and filter them
+    const result = await this.getLogsPaginated(sessionId, cursor, limit);
+    
+    const filteredLogs = result.data.filter(log => levels.includes(log.logLevel));
+
+    return {
+      ...result,
+      data: filteredLogs,
+    };
+  }
+
+  /**
+   * Merge logs from multiple sessions with pagination
+   */
+  async mergeLogsFromSessionsPaginated(
+    sessionIds: string[],
+    cursor: number = 0,
+    limit: number = 100
+  ): Promise<PaginationResult<LogEntry>> {
+    const allLogs: LogEntry[] = [];
+    let totalCount = 0;
+
+    for (const sessionId of sessionIds) {
+      const result = await this.getLogsPaginated(sessionId, cursor, limit);
+      allLogs.push(...result.data);
+      totalCount += result.total;
+    }
+
+    // Sort by timestamp
+    allLogs.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+    // Apply pagination to the merged results
+    const paginatedLogs = allLogs.slice(0, limit);
+
+    return {
+      data: paginatedLogs,
+      total: totalCount,
+      nextCursor: paginatedLogs.length > 0 
+        ? Math.max(...paginatedLogs.map(l => l.lineNumber))
+        : cursor,
+      hasMore: allLogs.length > limit,
+      hasPrevious: cursor > 0,
+    };
   }
 }

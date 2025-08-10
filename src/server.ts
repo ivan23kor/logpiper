@@ -77,24 +77,64 @@ class LogPiperMcpServer {
 
       if (uri.startsWith('logpiper://logs/')) {
         const sessionId = uri.replace('logpiper://logs/', '');
-        const logs = this.logManager.getAllLogs(sessionId);
         const session = this.logManager.getSession(sessionId);
 
         if (!session) {
           throw new McpError(ErrorCode.InvalidRequest, `Session ${sessionId} not found`);
         }
 
-        const logContent = logs
-          .map(log => `[${log.timestamp.toISOString()}] [${log.logLevel.toUpperCase()}] ${log.content}`)
-          .join('\n');
+        // Use paginated approach to avoid memory issues with huge logs
+        const maxResourceSize = 500 * 1024; // 500KB limit for resource content
+        let logContent = '';
+        let cursor = 0;
+        let totalLogs = 0;
+        const limit = 1000; // Process in batches
 
-        return {
-          contents: [{
-            uri,
-            mimeType: 'text/plain',
-            text: logContent,
-          }],
-        };
+        try {
+          const totalCount = await this.logManager.getLogCount(sessionId);
+          totalLogs = totalCount;
+
+          // If logs are small enough, get them all
+          if (totalCount <= 5000) { // Estimated threshold
+            const result = await this.logManager.getLogsPaginated(sessionId, 0, totalCount);
+            logContent = result.data
+              .map(log => `[${log.timestamp.toISOString()}] [${log.logLevel.toUpperCase()}] ${log.content}`)
+              .join('\n');
+          } else {
+            // For large logs, get recent ones and add a message
+            const result = await this.logManager.getRecentLogsPaginated(sessionId, 2000);
+            logContent = `# LogPiper: Large log file detected (${totalCount} entries)
+# Showing most recent 2000 entries. Use MCP tools for paginated access.
+# Available tools: get_logs_paginated, get_recent_logs, search_logs
+
+` + result.data
+              .map(log => `[${log.timestamp.toISOString()}] [${log.logLevel.toUpperCase()}] ${log.content}`)
+              .join('\n');
+          }
+
+          // Check if content is still too large
+          if (logContent.length > maxResourceSize) {
+            const truncatedContent = logContent.substring(0, maxResourceSize - 500);
+            logContent = truncatedContent + '\n\n# Content truncated due to size limits. Use MCP tools for full access.';
+          }
+
+          return {
+            contents: [{
+              uri,
+              mimeType: 'text/plain',
+              text: logContent,
+            }],
+          };
+        } catch (error) {
+          // Fallback to error message if pagination fails
+          return {
+            contents: [{
+              uri,
+              mimeType: 'text/plain',
+              text: `# Error loading logs for session ${sessionId}: ${error}\n# Use MCP tools like get_logs_paginated for access.`,
+            }],
+          };
+        }
       }
 
       if (uri === 'logpiper://sessions/active') {
@@ -248,6 +288,54 @@ class LogPiperMcpServer {
               required: ['sessionId'],
             },
           },
+          {
+            name: 'get_logs_paginated',
+            description: 'Get logs with cursor-based pagination and automatic chunking',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                sessionId: {
+                  type: 'string',
+                  description: 'Session ID to get logs from',
+                },
+                cursor: {
+                  type: 'number',
+                  description: 'Starting cursor position (line number). Defaults to 0.',
+                  default: 0,
+                },
+                limit: {
+                  type: 'number',
+                  description: 'Maximum number of log entries to return',
+                  default: 100,
+                },
+                reverse: {
+                  type: 'boolean',
+                  description: 'Read in reverse order (latest first)',
+                  default: false,
+                },
+              },
+              required: ['sessionId'],
+            },
+          },
+          {
+            name: 'get_recent_logs',
+            description: 'Get recent logs (latest first) with pagination',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                sessionId: {
+                  type: 'string',
+                  description: 'Session ID to get logs from',
+                },
+                limit: {
+                  type: 'number',
+                  description: 'Maximum number of log entries to return',
+                  default: 50,
+                },
+              },
+              required: ['sessionId'],
+            },
+          },
         ],
       };
     });
@@ -268,6 +356,10 @@ class LogPiperMcpServer {
           return this.handleAcknowledgeError(args as any);
         case 'get_error_history':
           return this.handleGetErrorHistory(args as any);
+        case 'get_logs_paginated':
+          return this.handleGetLogsPaginated(args as any);
+        case 'get_recent_logs':
+          return this.handleGetRecentLogs(args as any);
         default:
           throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
       }
@@ -282,44 +374,47 @@ class LogPiperMcpServer {
     const { sessionId, since = 0, limit = 100 } = args;
 
     if (sessionId) {
-      const newLogs = this.logManager.getNewLogs(sessionId, since);
-      const paginatedLogs = newLogs.slice(0, limit);
-      const hasMore = newLogs.length > limit;
+      const result = await this.logManager.getNewLogs(sessionId, since, limit);
 
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             sessionId,
-            logs: paginatedLogs,
-            total: newLogs.length,
-            nextCursor: paginatedLogs.length > 0 ? Math.max(...paginatedLogs.map(l => l.lineNumber)) : since,
-            hasMore,
+            logs: result.data,
+            total: result.total,
+            nextCursor: result.nextCursor,
+            hasMore: result.hasMore,
+            hasPrevious: result.hasPrevious,
           }, null, 2),
         }],
       };
     } else {
       const activeSessions = this.logManager.getActiveSessions();
-      const allNewLogs: LogEntry[] = [];
+      const allResults: LogEntry[] = [];
+      let totalCount = 0;
 
-      activeSessions.forEach(session => {
-        const logs = this.logManager.getNewLogs(session.id, since);
-        allNewLogs.push(...logs);
-      });
+      for (const session of activeSessions) {
+        const result = await this.logManager.getNewLogs(session.id, since, limit);
+        allResults.push(...result.data);
+        totalCount += result.total;
+      }
 
-      allNewLogs.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      allResults.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
-      const paginatedLogs = allNewLogs.slice(0, limit);
-      const hasMore = allNewLogs.length > limit;
+      // Apply final pagination to merged results
+      const finalResults = allResults.slice(0, limit);
+      const hasMore = allResults.length > limit;
 
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
-            logs: paginatedLogs,
-            total: allNewLogs.length,
-            nextCursor: paginatedLogs.length > 0 ? Math.max(...paginatedLogs.map(l => l.lineNumber)) : since,
+            logs: finalResults,
+            total: totalCount,
+            nextCursor: finalResults.length > 0 ? Math.max(...finalResults.map(l => l.lineNumber)) : since,
             hasMore,
+            hasPrevious: since > 0,
           }, null, 2),
         }],
       };
@@ -391,9 +486,7 @@ class LogPiperMcpServer {
     const { sessionId, query, limit = 50, offset = 0 } = args;
 
     if (sessionId) {
-      const results = this.logManager.searchLogs(sessionId, query);
-      const paginatedResults = results.slice(offset, offset + limit);
-      const hasMore = offset + limit < results.length;
+      const result = await this.logManager.searchLogs(sessionId, query, offset, limit);
 
       return {
         content: [{
@@ -401,40 +494,47 @@ class LogPiperMcpServer {
           text: JSON.stringify({
             sessionId,
             query,
-            results: paginatedResults,
-            total: results.length,
+            results: result.data,
+            total: result.total,
             offset,
             limit,
-            hasMore,
-            nextOffset: hasMore ? offset + limit : null,
+            hasMore: result.hasMore,
+            hasPrevious: result.hasPrevious,
+            nextOffset: result.nextCursor,
+            prevOffset: result.prevCursor,
           }, null, 2),
         }],
       };
     } else {
       const sessions = this.logManager.listSessions();
       const allResults: LogEntry[] = [];
+      let totalCount = 0;
 
-      sessions.forEach(session => {
-        const results = this.logManager.searchLogs(session.id, query);
-        allResults.push(...results);
-      });
+      for (const session of sessions) {
+        const result = await this.logManager.searchLogs(session.id, query, offset, limit);
+        allResults.push(...result.data);
+        totalCount += result.total;
+      }
 
       allResults.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 
-      const paginatedResults = allResults.slice(offset, offset + limit);
-      const hasMore = offset + limit < allResults.length;
+      // Apply final pagination to merged results
+      const finalResults = allResults.slice(0, limit);
+      const hasMore = allResults.length > limit;
 
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             query,
-            results: paginatedResults,
-            total: allResults.length,
+            results: finalResults,
+            total: totalCount,
             offset,
             limit,
             hasMore,
+            hasPrevious: offset > 0,
             nextOffset: hasMore ? offset + limit : null,
+            prevOffset: offset > 0 ? Math.max(0, offset - limit) : null,
           }, null, 2),
         }],
       };
@@ -467,6 +567,60 @@ class LogPiperMcpServer {
           sessionId,
           errors,
           total: errors.length,
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async handleGetLogsPaginated(args: {
+    sessionId: string;
+    cursor?: number;
+    limit?: number;
+    reverse?: boolean;
+  }) {
+    const { sessionId, cursor = 0, limit = 100, reverse = false } = args;
+
+    const result = await this.logManager.getLogsPaginated(sessionId, cursor, limit, reverse);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          sessionId,
+          logs: result.data,
+          total: result.total,
+          cursor,
+          limit,
+          reverse,
+          nextCursor: result.nextCursor,
+          prevCursor: result.prevCursor,
+          hasMore: result.hasMore,
+          hasPrevious: result.hasPrevious,
+        }, null, 2),
+      }],
+    };
+  }
+
+  private async handleGetRecentLogs(args: {
+    sessionId: string;
+    limit?: number;
+  }) {
+    const { sessionId, limit = 50 } = args;
+
+    const result = await this.logManager.getRecentLogsPaginated(sessionId, limit);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          sessionId,
+          logs: result.data,
+          total: result.total,
+          limit,
+          nextCursor: result.nextCursor,
+          prevCursor: result.prevCursor,
+          hasMore: result.hasMore,
+          hasPrevious: result.hasPrevious,
         }, null, 2),
       }],
     };
