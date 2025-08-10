@@ -1,4 +1,4 @@
-# LogPiper MCP Server
+# logpiper-mcp
 
 A sophisticated MCP (Model Context Protocol) server that streams terminal command logs with intelligent error detection and proactive notifications to Claude Code.
 
@@ -40,7 +40,7 @@ Configure Claude Code to use the LogPiper MCP server by adding to your `~/.claud
 ```json
 {
   "mcpServers": {
-    "logpiper": {
+    "logpiper-mcp": {
       "command": "node",
       "args": ["cmd", "/c", "C:\\Users\\Ivan\\Desktop\\logpiper\\dist\\server.js"]
     }

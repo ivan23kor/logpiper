@@ -16,7 +16,7 @@ import { ErrorDetector } from './error-detector.js';
 import { NotificationSystem } from './notification.js';
 import type { LogEntry, LogSession } from './types.js';
 
-class LogPiperMCPServer {
+class LogpiperMcpServer {
   private server: Server;
   private logManager: LogManager;
   private errorDetector: ErrorDetector;
@@ -535,12 +535,12 @@ class LogPiperMCPServer {
   async start(): Promise<void> {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('LogPiper MCP Server started');
+    console.error('logpiper-mcp server started');
   }
 }
 
-const server = new LogPiperMCPServer();
+const server = new LogpiperMcpServer();
 server.start().catch((error) => {
-  console.error('Failed to start LogPiper MCP Server:', error);
+  console.error('Failed to start logpiper-mcp server:', error);
   process.exit(1);
 });
