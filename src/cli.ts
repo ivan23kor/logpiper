@@ -31,10 +31,10 @@ class LogPiperCLI {
       mcpServerHost: 'localhost',
       ...config
     };
-    
+
     this.dataDir = join(tmpdir(), 'logpiper');
     this.ensureDataDir();
-    
+
     this.sessionId = this.generateSessionId();
     this.session = this.createSession();
   }
@@ -55,7 +55,7 @@ class LogPiperCLI {
     const projectDir = resolve(process.cwd());
     const allArgs = process.argv.slice(2).filter(arg => arg !== '--verbose' && arg !== '-v');
     const [command, ...args] = allArgs;
-    
+
     if (!command) {
       console.error('Usage: logpiper <command> [args...]');
       process.exit(1);
@@ -95,13 +95,13 @@ class LogPiperCLI {
         const sessionFile = join(this.dataDir, `${this.sessionId}.json`);
         writeFileSync(sessionFile, JSON.stringify(data.data, null, 2));
       }
-      
+
       // Store log entries
       if (data.type === 'log_entry') {
         const logsFile = join(this.dataDir, `${this.sessionId}.logs`);
         appendFileSync(logsFile, JSON.stringify(data.data) + '\n');
       }
-      
+
       // Update session status
       if (data.type === 'session_end') {
         const sessionFile = join(this.dataDir, `${this.sessionId}.json`);
@@ -112,13 +112,13 @@ class LogPiperCLI {
           writeFileSync(sessionFile, JSON.stringify(session, null, 2));
         }
       }
-      
+
       if (this.config.verbose) {
-        console.error('LogPiper event:', JSON.stringify(data));
+        console.error('logpiper event:', JSON.stringify(data));
       }
     } catch (error) {
       if (this.config.verbose) {
-        console.error('Failed to store LogPiper data:', error);
+        console.error('Failed to store logpiper data:', error);
       }
     }
   }
@@ -151,7 +151,7 @@ class LogPiperCLI {
     if (this.chunkTimer) {
       clearTimeout(this.chunkTimer);
     }
-    
+
     this.chunkTimer = setTimeout(() => {
       this.flushChunk();
     }, this.chunkDelay);
@@ -162,7 +162,7 @@ class LogPiperCLI {
 
     const combinedContent = this.chunkBuffer.join('\n');
     const logEntry = this.createLogEntry(combinedContent, this.chunkLevel!);
-    
+
     await this.sendToMCPServer({
       type: 'log_entry',
       data: logEntry
@@ -175,7 +175,7 @@ class LogPiperCLI {
   }
 
   async run(): Promise<void> {
-    console.log(`🚀 LogPiper starting: ${this.session.command} ${this.session.args.join(' ')}`);
+    console.log(`🚀 logpiper starting: ${this.session.command} ${this.session.args.join(' ')}`);
     console.log(`📁 Project: ${this.session.projectDir}`);
     console.log(`🔗 Session: ${this.sessionId}`);
 
@@ -203,7 +203,7 @@ class LogPiperCLI {
     child.on('close', async (code, signal) => {
       // Flush any remaining chunk before ending session
       await this.flushChunk();
-      
+
       this.session.status = code === 0 ? 'stopped' : 'crashed';
       this.session.endTime = new Date();
 
@@ -224,9 +224,9 @@ class LogPiperCLI {
     child.on('error', async (error) => {
       // Flush any remaining chunk before crashing
       await this.flushChunk();
-      
+
       this.session.status = 'crashed';
-      
+
       await this.sendToMCPServer({
         type: 'process_error',
         data: {
@@ -242,12 +242,12 @@ class LogPiperCLI {
 
     process.on('SIGINT', async () => {
       console.log('\n⏹️  Stopping logpiper...');
-      
+
       // Flush any remaining chunk before interrupting
       await this.flushChunk();
-      
+
       child.kill('SIGTERM');
-      
+
       setTimeout(() => {
         child.kill('SIGKILL');
       }, 5000);
@@ -268,6 +268,6 @@ const cli = new LogPiperCLI({
 });
 
 cli.run().catch((error) => {
-  console.error('❌ LogPiper CLI error:', error);
+  console.error('❌ logpiper CLI error:', error);
   process.exit(1);
 });

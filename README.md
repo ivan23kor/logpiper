@@ -1,56 +1,45 @@
-# LogPiper MCP Server
+# logpiper
 
-A sophisticated MCP (Model Context Protocol) server that streams terminal command logs with intelligent error detection and proactive notifications to Claude Code.
+[![npm]](https://www.npmjs.com/package/@ivan23kor/logpiper-mcp)
+
+[npm]: https://img.shields.io/npm/v/@ivan23kor/logpiper-mcp.svg?style=flat-square
+
+Logpiper is an MCP server and client for streaming terminal command logs with proactive error notifications
 
 ## Features
 
 🚀 **Multi-Session Support**: Run multiple `logpiper` instances simultaneously across different terminals  
 📊 **Real-time Streaming**: Only delivers new, unfetched logs via cursor-based streaming  
-🔍 **Smart Error Detection**: AI-powered pattern matching for build failures, test errors, runtime issues  
-📢 **Proactive Notifications**: Automatic alerts to Claude Code when critical errors occur  
-🎯 **Context-Rich Alerts**: Error notifications include file paths, suggested fixes, and actionable buttons  
-⚡ **Command Intelligence**: Specialized error detection for npm, docker, python, and more  
+📢 **Proactive Notifications**: Automatic alerts to Claude Code  
 
 ## Installation
 
+Install `logpiper` to access both components:
+
 ```bash
-# Install dependencies
-npm install
-
-# Build the project
-npm run build
-
-# Install globally (optional)
-npm link
+npm install -g logpiper
 ```
 
-### Installing the Log Monitor Guardian Agent
+This provides:
+- **CLI tool**: `logpiper` command for log collection
+- **MCP server**: `logpiper-mcp` for IDE integration
+- **Claude Code agent**: installation script will offer to install `log-monitor-guardian` agent to your Claude Code agents directory for automatic log monitoring with Claude Code.
 
-For automatic log monitoring with Claude Code, install the `log-monitor-guardian` agent by copying the `log-monitor-guardian.md` file to your Claude Code agents directory:
-```bash
-cp log-monitor-guardian.md ~/.claude/agents/
-```
-
-## Usage
-
-### 1. Start the MCP Server
-
-Configure Claude Code to use the LogPiper MCP server by adding to your `~/.claude/settings.json`:
+Add `logpiper` to your IDE configuration, e.g. `~/.claude/settings.json`:
 
 ```json
 {
   "mcpServers": {
     "logpiper": {
-      "command": "node",
-      "args": ["cmd", "/c", "C:\\Users\\Ivan\\Desktop\\logpiper\\dist\\server.js"]
+      "command": "logpiper-mcp"
     }
   }
 }
 ```
 
-### 2. Use LogPiper CLI
+## Usage
 
-Start monitoring any command by prefixing it with `logpiper`:
+### 1. Start monitoring any command by prefixing it with `logpiper`:
 
 #### Testing and CI/CD
 ```bash

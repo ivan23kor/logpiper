@@ -92,10 +92,19 @@ export interface SessionManager {
   removeSession(sessionId: string): void;
 }
 
+export interface PaginationResult<T> {
+  data: T[];
+  total: number;
+  nextCursor?: number;
+  prevCursor?: number;
+  hasMore: boolean;
+  hasPrevious: boolean;
+}
+
 export interface LogStorage {
   addLog(entry: LogEntry): void;
-  getNewLogs(sessionId: string, since: number): LogEntry[];
+  getNewLogs(sessionId: string, since: number, limit?: number): Promise<PaginationResult<LogEntry>>;
   getAllLogs(sessionId: string): LogEntry[];
-  searchLogs(sessionId: string, query: string): LogEntry[];
-  getLogCount(sessionId: string): number;
+  searchLogs(sessionId: string, query: string, cursor?: number, limit?: number): Promise<PaginationResult<LogEntry>>;
+  getLogCount(sessionId: string): Promise<number>;
 }
