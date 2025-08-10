@@ -16,7 +16,7 @@ import { ErrorDetector } from './error-detector.js';
 import { NotificationSystem } from './notification.js';
 import type { LogEntry, LogSession } from './types.js';
 
-class LogpiperMcpServer {
+class LogPiperMcpServer {
   private server: Server;
   private logManager: LogManager;
   private errorDetector: ErrorDetector;
@@ -26,7 +26,7 @@ class LogpiperMcpServer {
     this.logManager = new LogManager();
     this.errorDetector = new ErrorDetector();
     this.notificationSystem = new NotificationSystem();
-    
+
     this.server = new Server(
       {
         name: 'logpiper-mcp-server',
@@ -48,7 +48,7 @@ class LogpiperMcpServer {
   private setupRequestHandlers(): void {
     this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
       const sessions = this.logManager.listSessions();
-      
+
       return {
         resources: sessions.map(session => ({
           uri: `logpiper://logs/${session.id}`,
@@ -274,10 +274,10 @@ class LogpiperMcpServer {
     });
   }
 
-  private async handleGetNewLogs(args: { 
-    sessionId?: string; 
-    since?: number; 
-    limit?: number; 
+  private async handleGetNewLogs(args: {
+    sessionId?: string;
+    since?: number;
+    limit?: number;
   }) {
     const { sessionId, since = 0, limit = 100 } = args;
 
@@ -285,7 +285,7 @@ class LogpiperMcpServer {
       const newLogs = this.logManager.getNewLogs(sessionId, since);
       const paginatedLogs = newLogs.slice(0, limit);
       const hasMore = newLogs.length > limit;
-      
+
       return {
         content: [{
           type: 'text',
@@ -308,7 +308,7 @@ class LogpiperMcpServer {
       });
 
       allNewLogs.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      
+
       const paginatedLogs = allNewLogs.slice(0, limit);
       const hasMore = allNewLogs.length > limit;
 
@@ -326,7 +326,7 @@ class LogpiperMcpServer {
     }
   }
 
-  private async handleListSessions(args: { 
+  private async handleListSessions(args: {
     status?: string;
     limit?: number;
     offset?: number;
@@ -382,11 +382,11 @@ class LogpiperMcpServer {
     };
   }
 
-  private async handleSearchLogs(args: { 
-    sessionId?: string; 
-    query: string; 
-    limit?: number; 
-    offset?: number; 
+  private async handleSearchLogs(args: {
+    sessionId?: string;
+    query: string;
+    limit?: number;
+    offset?: number;
   }) {
     const { sessionId, query, limit = 50, offset = 0 } = args;
 
@@ -394,7 +394,7 @@ class LogpiperMcpServer {
       const results = this.logManager.searchLogs(sessionId, query);
       const paginatedResults = results.slice(offset, offset + limit);
       const hasMore = offset + limit < results.length;
-      
+
       return {
         content: [{
           type: 'text',
@@ -420,7 +420,7 @@ class LogpiperMcpServer {
       });
 
       allResults.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-      
+
       const paginatedResults = allResults.slice(offset, offset + limit);
       const hasMore = offset + limit < allResults.length;
 
@@ -497,7 +497,7 @@ class LogpiperMcpServer {
       case 'log_entry':
         const logEntry: LogEntry = message.data;
         this.logManager.addLog(logEntry);
-        
+
         const errorEvent = this.errorDetector.analyzeLog(logEntry);
         if (errorEvent) {
           await this.notificationSystem.sendErrorNotification(errorEvent);
@@ -539,7 +539,7 @@ class LogpiperMcpServer {
   }
 }
 
-const server = new LogpiperMcpServer();
+const server = new LogPiperMcpServer();
 server.start().catch((error) => {
   console.error('Failed to start logpiper-mcp server:', error);
   process.exit(1);

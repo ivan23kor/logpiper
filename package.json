@@ -1,17 +1,20 @@
 {
   "name": "logpiper-mcp",
   "version": "1.0.0",
-  "description": "MCP server for streaming terminal command logs with proactive error notifications",
+  "description": "MCP server and client for streaming terminal command logs with proactive error notifications",
   "main": "dist/server.js",
   "type": "module",
   "bin": {
-    "logpiper": "dist/cli.js"
+    "logpiper": "dist/cli.js",
+    "logpiper-mcp": "dist/server.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/server.js",
-    "cli": "node dist/cli.js"
+    "cli": "node dist/cli.js",
+    "prepublishOnly": "npm run build",
+    "postinstall": "node scripts/postinstall.js"
   },
   "keywords": [
     "mcp",
@@ -23,7 +26,9 @@
   "author": "Ivan",
   "license": "MIT",
   "files": [
-    "dist"
+    "dist",
+    "scripts",
+    "log-monitor-guardian.md"
   ],
   "repository": {
     "type": "git",

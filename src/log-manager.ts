@@ -1,8 +1,8 @@
-import type { 
-  LogEntry, 
-  LogSession, 
-  SessionManager, 
-  LogStorage 
+import type {
+  LogEntry,
+  LogSession,
+  SessionManager,
+  LogStorage
 } from './types.js';
 import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
@@ -18,7 +18,7 @@ export class LogManager implements SessionManager, LogStorage {
 
   createSession(projectDir: string, command: string, args: string[]): LogSession {
     const sessionId = this.generateSessionId(projectDir, command);
-    
+
     const session: LogSession = {
       id: sessionId,
       projectDir,
@@ -47,7 +47,7 @@ export class LogManager implements SessionManager, LogStorage {
     if (!existsSync(sessionFile)) {
       return undefined;
     }
-    
+
     try {
       const sessionData = JSON.parse(readFileSync(sessionFile, 'utf8'));
       sessionData.startTime = new Date(sessionData.startTime);
@@ -68,27 +68,27 @@ export class LogManager implements SessionManager, LogStorage {
 
     const sessions: LogSession[] = [];
     const files = readdirSync(this.dataDir);
-    
+
     for (const file of files) {
       if (file.endsWith('.json')) {
         try {
           const sessionFile = join(this.dataDir, file);
           const sessionData = JSON.parse(readFileSync(sessionFile, 'utf8'));
-          
+
           // Convert string dates back to Date objects
           sessionData.startTime = new Date(sessionData.startTime);
           sessionData.lastActivity = new Date(sessionData.lastActivity);
           if (sessionData.endTime) {
             sessionData.endTime = new Date(sessionData.endTime);
           }
-          
+
           sessions.push(sessionData);
         } catch (error) {
           // Skip invalid session files
         }
       }
     }
-    
+
     return sessions.sort((a, b) => b.lastActivity.getTime() - a.lastActivity.getTime());
   }
 
@@ -121,7 +121,7 @@ export class LogManager implements SessionManager, LogStorage {
     if (!existsSync(logsFile)) {
       return [];
     }
-    
+
     try {
       const content = readFileSync(logsFile, 'utf8');
       const lines = content.trim().split('\n').filter(line => line.length > 0);
@@ -138,8 +138,8 @@ export class LogManager implements SessionManager, LogStorage {
   searchLogs(sessionId: string, query: string): LogEntry[] {
     const allLogs = this.getAllLogs(sessionId);
     const lowerQuery = query.toLowerCase();
-    
-    return allLogs.filter(log => 
+
+    return allLogs.filter(log =>
       log.content.toLowerCase().includes(lowerQuery) ||
       log.command.toLowerCase().includes(lowerQuery)
     );
@@ -159,16 +159,16 @@ export class LogManager implements SessionManager, LogStorage {
     const session = this.getSession(sessionId);
     const sessionLogs = this.getAllLogs(sessionId);
 
-    const errorCount = sessionLogs.filter((log: LogEntry) => 
+    const errorCount = sessionLogs.filter((log: LogEntry) =>
       log.logLevel === 'stderr' || log.logLevel === 'error'
     ).length;
 
-    const warningCount = sessionLogs.filter((log: LogEntry) => 
-      log.logLevel === 'warn' || 
+    const warningCount = sessionLogs.filter((log: LogEntry) =>
+      log.logLevel === 'warn' ||
       log.content.toLowerCase().includes('warning')
     ).length;
 
-    const uptime = session ? 
+    const uptime = session ?
       (session.endTime || new Date()).getTime() - session.startTime.getTime() : 0;
 
     return {
@@ -186,20 +186,20 @@ export class LogManager implements SessionManager, LogStorage {
   }
 
   getLogsByTimeRange(
-    sessionId: string, 
-    startTime: Date, 
+    sessionId: string,
+    startTime: Date,
     endTime: Date
   ): LogEntry[] {
     const sessionLogs = this.getAllLogs(sessionId);
-    
-    return sessionLogs.filter((log: LogEntry) => 
+
+    return sessionLogs.filter((log: LogEntry) =>
       log.timestamp >= startTime && log.timestamp <= endTime
     );
   }
 
   getLogsByLevel(sessionId: string, levels: string[]): LogEntry[] {
     const sessionLogs = this.getAllLogs(sessionId);
-    
+
     return sessionLogs.filter((log: LogEntry) => levels.includes(log.logLevel));
   }
 
@@ -244,15 +244,15 @@ export class LogManager implements SessionManager, LogStorage {
     const stoppedSessions = allSessions.filter(s => s.status === 'stopped');
 
     const activeStartTimes = activeSessions.map(s => s.startTime);
-    
+
     return {
       total: allSessions.length,
       active: activeSessions.length,
       crashed: crashedSessions.length,
       stopped: stoppedSessions.length,
-      oldestActive: activeStartTimes.length > 0 ? 
+      oldestActive: activeStartTimes.length > 0 ?
         new Date(Math.min(...activeStartTimes.map(d => d.getTime()))) : null,
-      newestActive: activeStartTimes.length > 0 ? 
+      newestActive: activeStartTimes.length > 0 ?
         new Date(Math.max(...activeStartTimes.map(d => d.getTime()))) : null
     };
   }
@@ -271,13 +271,13 @@ export class LogManager implements SessionManager, LogStorage {
   }
 
   getSessionsByProject(projectDir: string): LogSession[] {
-    return this.listSessions().filter(session => 
+    return this.listSessions().filter(session =>
       session.projectDir === projectDir
     );
   }
 
   getSessionsByCommand(command: string): LogSession[] {
-    return this.listSessions().filter(session => 
+    return this.listSessions().filter(session =>
       session.command === command
     );
   }
