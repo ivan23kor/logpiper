@@ -115,8 +115,48 @@ async function installAgent() {
     }
 }
 
-// Only run if this is a global installation (not local npm install)
-if (process.env.npm_config_global === 'true') {
+// Check if this is a global installation using multiple methods
+function isGlobalInstallation() {
+    // Method 1: Check npm_config_global
+    if (process.env.npm_config_global === 'true') {
+        return true;
+    }
+    
+    // Method 2: Check if npm_config_prefix contains global paths
+    const prefix = process.env.npm_config_prefix;
+    if (prefix) {
+        const globalPrefixPatterns = [
+            '/usr/local',
+            '/usr/global',
+            'AppData\\npm',
+            '.npm-global',
+            'npm\\node_modules',
+            'lib/node_modules'
+        ];
+        
+        if (globalPrefixPatterns.some(pattern => prefix.includes(pattern))) {
+            return true;
+        }
+    }
+    
+    // Method 3: Check process.cwd() for global install patterns
+    const cwd = process.cwd();
+    const globalCwdPatterns = [
+        'node_modules/logpiper-mcp',
+        '\\npm\\node_modules\\logpiper-mcp',
+        '/lib/node_modules/logpiper-mcp',
+        '/usr/local/lib/node_modules/logpiper-mcp'
+    ];
+    
+    if (globalCwdPatterns.some(pattern => cwd.includes(pattern))) {
+        return true;
+    }
+    
+    return false;
+}
+
+// Run agent installation for global installs, show info for local installs
+if (isGlobalInstallation()) {
     installAgent().catch(console.error);
 } else {
     console.log('\n🚀 logpiper installed locally.');

@@ -1,6 +1,6 @@
 # logpiper
 
-[![npm]](https://www.npmjs.com/package/@ivan23kor/logpiper-mcp)
+[![npm]](https://www.npmjs.com/package/logpiper-mcp)
 
 [npm]: https://img.shields.io/npm/v/@ivan23kor/logpiper-mcp.svg?style=flat-square
 
@@ -78,12 +78,18 @@ logpiper nodemon app.js
 
 | Tool | Description | Usage |
 |------|-------------|-------|
-| `get_new_logs` | Stream new logs since cursor | Real-time log monitoring |
-| `list_sessions` | List all logging sessions | Session management |  
-| `get_session_info` | Get detailed session info | Debugging context |
-| `search_logs` | Search through logs | Error investigation |
-| `acknowledge_error` | Mark errors as seen | Error management |
-| `get_error_history` | View recent errors | Error tracking |
+| `get_new_logs` | Get new logs since cursor position (streaming) | Real-time log monitoring |
+| `list_sessions` | List all logging sessions with metadata | Session management |
+| `get_session_info` | Get detailed information about specific session | Debugging context |
+| `search_logs` | Search through logs with query string | Error investigation |
+| `acknowledge_error` | Mark an error as acknowledged | Error management |
+| `get_error_history` | Get recent errors for a session | Error tracking |
+| `get_logs_paginated` | Get logs with cursor-based pagination and automatic chunking | Large log file navigation |
+| `get_recent_logs` | Get recent logs (latest first) with pagination | Quick access to latest logs |
+| `reset_all_sessions` | Reset all sessions and logs - completely clears all LogPiper data | Complete cleanup |
+| `reset_session` | Reset a specific session - removes session and its logs | Individual session cleanup |
+| `clear_session_logs` | Clear logs for session while keeping session metadata | Log cleanup only |
+| `reset_sessions_by_criteria` | Reset sessions matching specific criteria | Selective cleanup |
 
 ## Contributing
 

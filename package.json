@@ -13,8 +13,7 @@
     "dev": "tsc --watch",
     "start": "node dist/server.js",
     "cli": "node dist/cli.js",
-    "prepublishOnly": "npm run build",
-    "postinstall": "node scripts/postinstall.js"
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "mcp",

@@ -6,7 +6,13 @@ import { resolve } from 'path';
 import { writeFileSync, mkdirSync, existsSync, readFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { readFileSync as readPackageJson } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 import type { LogEntry, LogSession } from './types.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 interface LogPiperConfig {
   mcpServerPort?: number;
@@ -17,7 +23,7 @@ interface LogPiperConfig {
 class LogPiperCLI {
   private config: LogPiperConfig;
   private sessionId: string;
-  private session: LogSession;
+  private session!: LogSession;
   private lineNumber: number = 0;
   private dataDir: string;
   private chunkBuffer: string[] = [];
@@ -36,7 +42,7 @@ class LogPiperCLI {
     this.ensureDataDir();
 
     this.sessionId = this.generateSessionId();
-    this.session = this.createSession();
+    // Don't create session in constructor - do it when needed
   }
 
   private ensureDataDir(): void {
@@ -51,17 +57,122 @@ class LogPiperCLI {
     return `session_${timestamp}_${random}`;
   }
 
-  private createSession(): LogSession {
-    const projectDir = resolve(process.cwd());
-    const allArgs = process.argv.slice(2).filter(arg => arg !== '--verbose' && arg !== '-v');
-    const [command, ...args] = allArgs;
+  private getVersion(): string {
+    try {
+      // Try to find package.json in the module directory
+      const moduleDir = resolve(__dirname, '..');
+      const packagePath = join(moduleDir, 'package.json');
+      const packageJson = JSON.parse(readPackageJson(packagePath, 'utf8'));
+      return packageJson.version || 'unknown';
+    } catch {
+      try {
+        // Fallback to current directory
+        const packagePath = join(process.cwd(), 'package.json');
+        const packageJson = JSON.parse(readPackageJson(packagePath, 'utf8'));
+        return packageJson.version || 'unknown';
+      } catch {
+        return 'unknown';
+      }
+    }
+  }
 
-    if (!command) {
-      console.error('Usage: logpiper <command> [args...]');
+  private showHelp(): void {
+    const version = this.getVersion();
+    console.log(`logpiper v${version} - MCP server for intelligent log monitoring
+
+USAGE:
+  logpiper [OPTIONS] <command> [args...]
+  logpiper [OPTIONS]
+
+OPTIONS:
+  -h, --help         Show this help message
+  -V, --version      Show version number
+  -v, --verbose      Enable verbose logging
+      --install-agent Install LogPiper monitoring agent for Claude Code
+
+EXAMPLES:
+  # Monitor a build process
+  logpiper npm run build
+
+  # Monitor tests with verbose output
+  logpiper --verbose npm test
+
+  # Monitor Docker container logs
+  docker logs -f myapp 2>&1 | logpiper
+
+  # Monitor long-running services
+  logpiper docker-compose up
+
+  # Install monitoring agent after global installation
+  logpiper --install-agent
+
+CONTINUOUS MONITORING:
+  For streaming logs, pipe both stdout and stderr:
+    docker-compose logs -f 2>&1 | logpiper
+    tail -f app.log | logpiper
+
+DOCUMENTATION:
+  GitHub: https://github.com/ivan23kor/logpiper-mcp
+  
+LogPiper streams command output to MCP tools for real-time error detection 
+and analysis in Claude Code.`);
+  }
+
+  private async installAgent(): Promise<void> {
+    const { spawn } = await import('child_process');
+    const postinstallScript = join(process.cwd(), 'scripts', 'postinstall.js');
+    
+    try {
+      // Try to find the postinstall script in the module directory
+      const moduleDir = resolve(__dirname, '..');
+      const scriptPath = join(moduleDir, 'scripts', 'postinstall.js');
+      
+      const child = spawn('node', [scriptPath], {
+        stdio: 'inherit',
+        env: { ...process.env, npm_config_global: 'true' }
+      });
+      
+      child.on('close', (code) => {
+        process.exit(code || 0);
+      });
+      
+      child.on('error', (error) => {
+        console.error('❌ Failed to run agent installer:', error.message);
+        console.log('💡 You can manually create ~/.claude/agents/logpiper-monitor.md');
+        process.exit(1);
+      });
+    } catch (error) {
+      console.error('❌ Agent installation failed:', error);
       process.exit(1);
     }
+  }
 
-    return {
+  private parseArguments(): { command: string | null, args: string[] } {
+    const allArgs = process.argv.slice(2);
+    
+    // Find the first argument that doesn't start with --
+    let commandIndex = -1;
+    for (let i = 0; i < allArgs.length; i++) {
+      if (!allArgs[i].startsWith('--')) {
+        commandIndex = i;
+        break;
+      }
+    }
+    
+    if (commandIndex === -1) {
+      return { command: null, args: [] };
+    }
+    
+    const command = allArgs[commandIndex];
+    const args = allArgs.slice(commandIndex + 1);
+    
+    return { command, args };
+  }
+
+  private initializeSession(command: string, args: string[]): void {
+    const projectDir = resolve(process.cwd());
+
+    this.session = {
       id: this.sessionId,
       projectDir,
       command,
@@ -175,6 +286,36 @@ class LogPiperCLI {
   }
 
   async run(): Promise<void> {
+    // Check for special flags first
+    const allArgs = process.argv.slice(2);
+    
+    // Handle help flag
+    if (allArgs.includes('--help') || allArgs.includes('-h')) {
+      this.showHelp();
+      return;
+    }
+    
+    // Handle version flag
+    if (allArgs.includes('--version') || allArgs.includes('-V')) {
+      console.log(this.getVersion());
+      return;
+    }
+    
+    // Handle agent installation
+    if (allArgs.includes('--install-agent')) {
+      await this.installAgent();
+      return;
+    }
+
+    const { command, args } = this.parseArguments();
+
+    if (!command) {
+      console.error('Usage: logpiper <command> [args...]');
+      process.exit(1);
+    }
+
+    this.initializeSession(command, args);
+
     console.log(`🚀 logpiper starting: ${this.session.command} ${this.session.args.join(' ')}`);
     console.log(`📁 Project: ${this.session.projectDir}`);
     console.log(`🔗 Session: ${this.sessionId}`);
