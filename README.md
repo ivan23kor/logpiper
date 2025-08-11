@@ -2,7 +2,7 @@
 
 [![npm]](https://www.npmjs.com/package/logpiper-mcp)
 
-[npm]: https://img.shields.io/npm/v/@ivan23kor/logpiper-mcp.svg?style=flat-square
+[npm]: https://img.shields.io/npm/v/logpiper-mcp.svg?style=flat-square
 
 Logpiper is an MCP server and client for streaming terminal command logs with proactive error notifications
 
