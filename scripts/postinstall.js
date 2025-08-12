@@ -104,9 +104,14 @@ async function installAgent() {
         }
 
         console.log('\n📖 Next steps:');
-        console.log('   1. Add logpiper to your Claude Code MCP settings');
+        console.log('   1. Add logpiper to your Claude Code MCP settings (~/.claude.json):');
+        console.log('"mcpServers": {');
+        console.log('  "logpiper-mcp": {');
+        console.log('     "command": "logpiper-mcp"');
+        console.log('  }');
+        console.log('}');
         console.log('   2. Start monitoring: logpiper <your-command>');
-        console.log('   3. Use Claude Code to analyze logs in real-time');
+        console.log('   3. Claude Code will now have access to logs of your terminal commands');
         console.log('\n🔗 Documentation: https://github.com/ivan23kor/logpiper-mcp#readme');
 
     } catch (error) {
@@ -121,7 +126,7 @@ function isGlobalInstallation() {
     if (process.env.npm_config_global === 'true') {
         return true;
     }
-    
+
     // Method 2: Check if npm_config_prefix contains global paths
     const prefix = process.env.npm_config_prefix;
     if (prefix) {
@@ -133,12 +138,12 @@ function isGlobalInstallation() {
             'npm\\node_modules',
             'lib/node_modules'
         ];
-        
+
         if (globalPrefixPatterns.some(pattern => prefix.includes(pattern))) {
             return true;
         }
     }
-    
+
     // Method 3: Check process.cwd() for global install patterns
     const cwd = process.cwd();
     const globalCwdPatterns = [
@@ -147,11 +152,11 @@ function isGlobalInstallation() {
         '/lib/node_modules/logpiper-mcp',
         '/usr/local/lib/node_modules/logpiper-mcp'
     ];
-    
+
     if (globalCwdPatterns.some(pattern => cwd.includes(pattern))) {
         return true;
     }
-    
+
     return false;
 }
 

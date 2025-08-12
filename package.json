@@ -1,6 +1,6 @@
 {
   "name": "logpiper-mcp",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "MCP server and client for streaming terminal command logs with proactive error notifications",
   "main": "dist/server.js",
   "type": "module",

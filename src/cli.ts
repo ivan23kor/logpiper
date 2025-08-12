@@ -20,16 +20,24 @@ interface LogPiperConfig {
   verbose?: boolean;
 }
 
+interface TimestampedLine {
+  content: string;
+  timestamp: number; // Date.now()
+}
+
 class LogPiperCLI {
   private config: LogPiperConfig;
   private sessionId: string;
   private session!: LogSession;
   private lineNumber: number = 0;
   private dataDir: string;
-  private chunkBuffer: string[] = [];
+  private chunkBuffer: TimestampedLine[] = [];
   private chunkLevel: 'stdout' | 'stderr' | null = null;
-  private chunkTimer: NodeJS.Timeout | null = null;
-  private readonly chunkDelay = 100; // ms
+  private readonly chunkTimeThreshold = 500; // ms - increased for better log grouping
+  private chunkFlushTimer: NodeJS.Timeout | null = null;
+  private currentServicePrefix: string | null = null;
+  private readonly maxChunkLines = 20;
+  private readonly maxChunkBytes = 8192; // 8KB
 
   constructor(config: LogPiperConfig = {}) {
     this.config = {
@@ -237,41 +245,125 @@ and analysis in Claude Code.`);
   private async handleOutput(data: Buffer, logLevel: 'stdout' | 'stderr'): Promise<void> {
     const content = data.toString();
     const lines = content.split('\n').filter(line => line.length > 0);
+    const timestamp = Date.now();
 
     // Display output immediately for real-time feedback
     for (const line of lines) {
       console.log(line);
     }
 
-    // Add to chunk buffer
-    this.addToChunk(lines, logLevel);
+    // Add to chunk buffer with timestamps
+    this.addToChunk(lines, logLevel, timestamp);
     this.session.lastActivity = new Date();
   }
 
-  private addToChunk(lines: string[], logLevel: 'stdout' | 'stderr'): void {
-    // If this is a different log level than current chunk, flush and start new chunk
-    if (this.chunkLevel !== null && this.chunkLevel !== logLevel) {
+  private addToChunk(lines: string[], logLevel: 'stdout' | 'stderr', timestamp: number): void {
+    // Check if we need to flush current chunk before adding new lines
+    if (this.shouldFlushChunk(logLevel, lines)) {
       this.flushChunk();
     }
 
-    // Add lines to buffer
-    this.chunkBuffer.push(...lines);
+    // Update current service prefix from first line
+    if (lines.length > 0) {
+      const servicePrefix = this.extractServicePrefix(lines[0]);
+      if (servicePrefix) {
+        this.currentServicePrefix = servicePrefix;
+      }
+    }
+
+    // Add lines to buffer with timestamps
+    const timestampedLines: TimestampedLine[] = lines.map(content => ({
+      content,
+      timestamp
+    }));
+    
+    this.chunkBuffer.push(...timestampedLines);
     this.chunkLevel = logLevel;
 
-    // Reset/set timer to flush chunk after delay
-    if (this.chunkTimer) {
-      clearTimeout(this.chunkTimer);
+    // Set or reset flush timer to batch log entries
+    if (this.chunkFlushTimer) {
+      clearTimeout(this.chunkFlushTimer);
+    }
+    
+    this.chunkFlushTimer = setTimeout(() => {
+      this.flushChunk();
+    }, this.chunkTimeThreshold);
+  }
+
+  private extractServicePrefix(line: string): string | null {
+    // Match docker-compose service prefixes like "crowbar-mongodb        |"
+    const dockerComposeMatch = line.match(/^([a-zA-Z0-9_-]+)\s*\|\s*/);
+    if (dockerComposeMatch) {
+      return dockerComposeMatch[1];
+    }
+    
+    // Match other common service patterns like "[service-name]" or "service-name:"
+    const serviceBracketMatch = line.match(/^\[([a-zA-Z0-9_-]+)\]/);
+    if (serviceBracketMatch) {
+      return serviceBracketMatch[1];
+    }
+    
+    const serviceColonMatch = line.match(/^([a-zA-Z0-9_-]+):\s/);
+    if (serviceColonMatch) {
+      return serviceColonMatch[1];
+    }
+    
+    return null;
+  }
+
+  private isJsonLikeLine(line: string): boolean {
+    const trimmed = line.trim();
+    return (trimmed.startsWith('{') && trimmed.includes('"')) || 
+           (trimmed.includes('"t":{"$date":') && trimmed.includes('"s":'));
+  }
+
+  private shouldFlushChunk(newLogLevel: 'stdout' | 'stderr', newLines: string[]): boolean {
+    // Flush if no current chunk exists
+    if (this.chunkLevel === null || this.chunkBuffer.length === 0) {
+      return false;
     }
 
-    this.chunkTimer = setTimeout(() => {
-      this.flushChunk();
-    }, this.chunkDelay);
+    // Flush if log level changed
+    if (this.chunkLevel !== newLogLevel) {
+      return true;
+    }
+
+    // Check size limits
+    if (this.chunkBuffer.length >= this.maxChunkLines) {
+      return true;
+    }
+
+    const currentSize = this.chunkBuffer.reduce((sum, line) => sum + line.content.length, 0);
+    const newSize = newLines.reduce((sum, line) => sum + line.length, 0);
+    if (currentSize + newSize > this.maxChunkBytes) {
+      return true;
+    }
+
+    // Check for service prefix change (content-based grouping)
+    if (newLines.length > 0) {
+      const newServicePrefix = this.extractServicePrefix(newLines[0]);
+      
+      // If we have a current service and new lines have a different service, flush
+      if (this.currentServicePrefix && newServicePrefix && 
+          this.currentServicePrefix !== newServicePrefix) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private async flushChunk(): Promise<void> {
     if (this.chunkBuffer.length === 0) return;
 
-    const combinedContent = this.chunkBuffer.join('\n');
+    // Clear flush timer
+    if (this.chunkFlushTimer) {
+      clearTimeout(this.chunkFlushTimer);
+      this.chunkFlushTimer = null;
+    }
+
+    // Extract content from timestamped lines and combine
+    const combinedContent = this.chunkBuffer.map(line => line.content).join('\n');
     const logEntry = this.createLogEntry(combinedContent, this.chunkLevel!);
 
     await this.sendToMCPServer({
@@ -282,7 +374,61 @@ and analysis in Claude Code.`);
     // Reset chunk state
     this.chunkBuffer = [];
     this.chunkLevel = null;
-    this.chunkTimer = null;
+    this.currentServicePrefix = null;
+  }
+
+  private async runPipeMode(): Promise<void> {
+    this.initializeSession('pipe', []);
+    
+    console.error(`🚀 logpiper pipe mode started`);
+    console.error(`📁 Project: ${this.session.projectDir}`);
+    console.error(`🔗 Session: ${this.sessionId}`);
+
+    await this.sendToMCPServer({
+      type: 'session_start',
+      data: this.session
+    });
+
+    // Read from stdin with chunking
+    process.stdin.on('data', (data) => {
+      this.handleOutput(data, 'stdout');
+    });
+
+    process.stdin.on('end', async () => {
+      // Flush any remaining chunk before ending
+      await this.flushChunk();
+
+      this.session.status = 'stopped';
+      this.session.endTime = new Date();
+
+      await this.sendToMCPServer({
+        type: 'session_end',
+        data: {
+          sessionId: this.sessionId,
+          endTime: this.session.endTime
+        }
+      });
+
+      console.error(`\n✅ Pipe mode completed`);
+      process.exit(0);
+    });
+
+    process.on('SIGINT', async () => {
+      console.error('\n⏹️  Stopping logpiper...');
+      
+      // Flush any remaining chunk before interrupting
+      await this.flushChunk();
+
+      await this.sendToMCPServer({
+        type: 'session_interrupt',
+        data: {
+          sessionId: this.sessionId,
+          timestamp: new Date()
+        }
+      });
+
+      process.exit(0);
+    });
   }
 
   async run(): Promise<void> {
@@ -310,8 +456,9 @@ and analysis in Claude Code.`);
     const { command, args } = this.parseArguments();
 
     if (!command) {
-      console.error('Usage: logpiper <command> [args...]');
-      process.exit(1);
+      // Handle pipe mode - read from stdin
+      await this.runPipeMode();
+      return;
     }
 
     this.initializeSession(command, args);

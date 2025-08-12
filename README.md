@@ -14,16 +14,18 @@ Logpiper is an MCP server and client for streaming terminal command logs with pr
 
 ## Installation
 
-Install `logpiper` to access both components:
+Install npm package `logpiper-mcp` to access both components:
 
 ```bash
-npm install -g logpiper
+npm install -g logpiper-mcp
 ```
 
 This provides:
 - **CLI tool**: `logpiper` command for log collection
 - **MCP server**: `logpiper-mcp` for IDE integration
-- **Claude Code agent**: installation script will offer to install `log-monitor-guardian` agent to your Claude Code agents directory for automatic log monitoring with Claude Code.
+- **Claude Code agent**: installation script will offer to install `logpiper-monitor` agent to your Claude Code agents directory for automatic log monitoring with Claude Code.
+
+If you installed `logpiper-mcp` locally, you can install `logpiper-monitor` agent manually by running `logpiper --install-agent`.
 
 Add `logpiper` to your IDE configuration, e.g. `~/.claude/settings.json`:
 
