@@ -22,6 +22,13 @@ export interface LogSession {
   readCursor: number;
   errorHistory: ErrorEvent[];
   lastActivity: Date;
+  autoCleanupScheduled?: boolean;
+  metadata?: {
+    commandSignature: string;
+    projectName: string;
+    workingDirectory: string;
+    [key: string]: any;
+  };
 }
 
 export interface ErrorEvent {

@@ -3,7 +3,7 @@
 import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { resolve } from 'path';
-import { writeFileSync, mkdirSync, existsSync, readFileSync, appendFileSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync, appendFileSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { readFileSync as readPackageJson } from 'fs';
@@ -65,6 +65,52 @@ class LogPiperCLI {
     return `session_${timestamp}_${random}`;
   }
 
+  /**
+   * Check for duplicate sessions and warn user
+   */
+  private checkForDuplicateSessions(projectDir: string, commandSignature: string): void {
+    if (!existsSync(this.dataDir)) {
+      return;
+    }
+
+    try {
+      const files = readdirSync(this.dataDir);
+      const activeSessions = [];
+
+      for (const file of files) {
+        if (file.endsWith('.json')) {
+          try {
+            const sessionFile = join(this.dataDir, file);
+            const sessionData = JSON.parse(readFileSync(sessionFile, 'utf8'));
+
+            // Only check running sessions
+            if (sessionData.status === 'running' &&
+              sessionData.projectDir === projectDir &&
+              sessionData.metadata?.commandSignature === commandSignature) {
+              activeSessions.push(sessionData);
+            }
+          } catch {
+            // Skip invalid session files
+          }
+        }
+      }
+
+      if (activeSessions.length > 0) {
+        console.log(`\n⚠️  Warning: Found ${activeSessions.length} existing session(s) for the same command:`);
+        for (const session of activeSessions) {
+          const age = Date.now() - new Date(session.startTime).getTime();
+          const ageMinutes = Math.floor(age / (1000 * 60));
+          console.log(`  🔗 ${session.id} (${ageMinutes} minutes ago)`);
+        }
+        console.log('\n💡 Multiple sessions may be capturing the same output.');
+        console.log('   This is normal if you\'re monitoring different aspects or instances.');
+        console.log('');
+      }
+    } catch (error) {
+      // Silently continue if we can't check for duplicates
+    }
+  }
+
   private getVersion(): string {
     try {
       // Try to find package.json in the module directory
@@ -123,27 +169,27 @@ DOCUMENTATION:
   GitHub: https://github.com/ivan23kor/logpiper-mcp
   
 LogPiper streams command output to MCP tools for real-time error detection 
-and analysis in Claude Code.`);
+and analysis in Claude Code`);
   }
 
   private async installAgent(): Promise<void> {
     const { spawn } = await import('child_process');
     const postinstallScript = join(process.cwd(), 'scripts', 'postinstall.js');
-    
+
     try {
       // Try to find the postinstall script in the module directory
       const moduleDir = resolve(__dirname, '..');
       const scriptPath = join(moduleDir, 'scripts', 'postinstall.js');
-      
+
       const child = spawn('node', [scriptPath], {
         stdio: 'inherit',
         env: { ...process.env, npm_config_global: 'true' }
       });
-      
+
       child.on('close', (code) => {
         process.exit(code || 0);
       });
-      
+
       child.on('error', (error) => {
         console.error('❌ Failed to run agent installer:', error.message);
         console.log('💡 You can manually create ~/.claude/agents/logpiper-monitor.md');
@@ -157,7 +203,7 @@ and analysis in Claude Code.`);
 
   private parseArguments(): { command: string | null, args: string[] } {
     const allArgs = process.argv.slice(2);
-    
+
     // Find the first argument that doesn't start with --
     let commandIndex = -1;
     for (let i = 0; i < allArgs.length; i++) {
@@ -166,19 +212,23 @@ and analysis in Claude Code.`);
         break;
       }
     }
-    
+
     if (commandIndex === -1) {
       return { command: null, args: [] };
     }
-    
+
     const command = allArgs[commandIndex];
     const args = allArgs.slice(commandIndex + 1);
-    
+
     return { command, args };
   }
 
   private initializeSession(command: string, args: string[]): void {
     const projectDir = resolve(process.cwd());
+    const commandSignature = `${command} ${args.join(' ')}`;
+
+    // Check for existing sessions with the same command in the same directory
+    this.checkForDuplicateSessions(projectDir, commandSignature);
 
     this.session = {
       id: this.sessionId,
@@ -189,7 +239,13 @@ and analysis in Claude Code.`);
       status: 'running',
       readCursor: 0,
       errorHistory: [],
-      lastActivity: new Date()
+      lastActivity: new Date(),
+      pid: undefined,
+      metadata: {
+        commandSignature,
+        projectName: projectDir.split(/[/\\]/).pop() || 'unknown',
+        workingDirectory: projectDir
+      }
     };
   }
 
@@ -221,15 +277,29 @@ and analysis in Claude Code.`);
         appendFileSync(logsFile, JSON.stringify(data.data) + '\n');
       }
 
-      // Update session status
-      if (data.type === 'session_end') {
+      // Update session status and schedule cleanup for terminated sessions
+      if (data.type === 'session_end' || data.type === 'session_interrupt' || data.type === 'process_error') {
         const sessionFile = join(this.dataDir, `${this.sessionId}.json`);
         if (existsSync(sessionFile)) {
           const session = JSON.parse(readFileSync(sessionFile, 'utf8'));
-          session.status = 'stopped';
-          session.endTime = data.data.endTime;
+          if (data.type === 'session_end') {
+            session.status = 'stopped';
+            session.endTime = data.data.endTime;
+          } else if (data.type === 'process_error') {
+            session.status = 'crashed';
+            session.endTime = new Date();
+          } else if (data.type === 'session_interrupt') {
+            session.status = 'stopped';
+            session.endTime = data.data.timestamp;
+          }
+          session.autoCleanupScheduled = true;
           writeFileSync(sessionFile, JSON.stringify(session, null, 2));
         }
+
+        // Schedule immediate cleanup for terminated sessions
+        setTimeout(() => {
+          this.cleanupTerminatedSession();
+        }, 500); // Short delay to ensure session file is written
       }
 
       if (this.config.verbose) {
@@ -238,6 +308,43 @@ and analysis in Claude Code.`);
     } catch (error) {
       if (this.config.verbose) {
         console.error('Failed to store logpiper data:', error);
+      }
+    }
+  }
+
+  private cleanupTerminatedSession(): void {
+    try {
+      const sessionFile = join(this.dataDir, `${this.sessionId}.json`);
+      const logsFile = join(this.dataDir, `${this.sessionId}.logs`);
+
+      // Check if session is marked for auto cleanup
+      if (existsSync(sessionFile)) {
+        const session = JSON.parse(readFileSync(sessionFile, 'utf8'));
+        if (session.autoCleanupScheduled && session.status !== 'running') {
+          // Remove session and log files
+          try {
+            if (existsSync(sessionFile)) {
+              unlinkSync(sessionFile);
+              if (this.config.verbose) {
+                console.error(`Cleaned up session file: ${sessionFile}`);
+              }
+            }
+            if (existsSync(logsFile)) {
+              unlinkSync(logsFile);
+              if (this.config.verbose) {
+                console.error(`Cleaned up logs file: ${logsFile}`);
+              }
+            }
+          } catch (cleanupError) {
+            if (this.config.verbose) {
+              console.error('Failed to cleanup session files:', cleanupError);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (this.config.verbose) {
+        console.error('Error during session cleanup:', error);
       }
     }
   }
@@ -276,7 +383,7 @@ and analysis in Claude Code.`);
       content,
       timestamp
     }));
-    
+
     this.chunkBuffer.push(...timestampedLines);
     this.chunkLevel = logLevel;
 
@@ -284,7 +391,7 @@ and analysis in Claude Code.`);
     if (this.chunkFlushTimer) {
       clearTimeout(this.chunkFlushTimer);
     }
-    
+
     this.chunkFlushTimer = setTimeout(() => {
       this.flushChunk();
     }, this.chunkTimeThreshold);
@@ -296,25 +403,25 @@ and analysis in Claude Code.`);
     if (dockerComposeMatch) {
       return dockerComposeMatch[1];
     }
-    
+
     // Match other common service patterns like "[service-name]" or "service-name:"
     const serviceBracketMatch = line.match(/^\[([a-zA-Z0-9_-]+)\]/);
     if (serviceBracketMatch) {
       return serviceBracketMatch[1];
     }
-    
+
     const serviceColonMatch = line.match(/^([a-zA-Z0-9_-]+):\s/);
     if (serviceColonMatch) {
       return serviceColonMatch[1];
     }
-    
+
     return null;
   }
 
   private isJsonLikeLine(line: string): boolean {
     const trimmed = line.trim();
-    return (trimmed.startsWith('{') && trimmed.includes('"')) || 
-           (trimmed.includes('"t":{"$date":') && trimmed.includes('"s":'));
+    return (trimmed.startsWith('{') && trimmed.includes('"')) ||
+      (trimmed.includes('"t":{"$date":') && trimmed.includes('"s":'));
   }
 
   private shouldFlushChunk(newLogLevel: 'stdout' | 'stderr', newLines: string[]): boolean {
@@ -342,10 +449,10 @@ and analysis in Claude Code.`);
     // Check for service prefix change (content-based grouping)
     if (newLines.length > 0) {
       const newServicePrefix = this.extractServicePrefix(newLines[0]);
-      
+
       // If we have a current service and new lines have a different service, flush
-      if (this.currentServicePrefix && newServicePrefix && 
-          this.currentServicePrefix !== newServicePrefix) {
+      if (this.currentServicePrefix && newServicePrefix &&
+        this.currentServicePrefix !== newServicePrefix) {
         return true;
       }
     }
@@ -379,7 +486,7 @@ and analysis in Claude Code.`);
 
   private async runPipeMode(): Promise<void> {
     this.initializeSession('pipe', []);
-    
+
     console.error(`🚀 logpiper pipe mode started`);
     console.error(`📁 Project: ${this.session.projectDir}`);
     console.error(`🔗 Session: ${this.sessionId}`);
@@ -415,7 +522,7 @@ and analysis in Claude Code.`);
 
     process.on('SIGINT', async () => {
       console.error('\n⏹️  Stopping logpiper...');
-      
+
       // Flush any remaining chunk before interrupting
       await this.flushChunk();
 
@@ -427,6 +534,9 @@ and analysis in Claude Code.`);
         }
       });
 
+      // Wait a moment for cleanup to complete
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
       process.exit(0);
     });
   }
@@ -434,19 +544,19 @@ and analysis in Claude Code.`);
   async run(): Promise<void> {
     // Check for special flags first
     const allArgs = process.argv.slice(2);
-    
+
     // Handle help flag
     if (allArgs.includes('--help') || allArgs.includes('-h')) {
       this.showHelp();
       return;
     }
-    
+
     // Handle version flag
     if (allArgs.includes('--version') || allArgs.includes('-V')) {
       console.log(this.getVersion());
       return;
     }
-    
+
     // Handle agent installation
     if (allArgs.includes('--install-agent')) {
       await this.installAgent();
@@ -506,6 +616,10 @@ and analysis in Claude Code.`);
       });
 
       console.log(`\n✅ Process ${code === 0 ? 'completed' : 'crashed'} (code: ${code})`);
+
+      // Wait a moment for cleanup to complete
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
       process.exit(code || 0);
     });
 
@@ -547,6 +661,11 @@ and analysis in Claude Code.`);
           timestamp: new Date()
         }
       });
+
+      // Wait a moment for cleanup to complete
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      process.exit(0);
     });
   }
 }

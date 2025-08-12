@@ -310,21 +310,7 @@ export class ErrorDetector {
     }
   }
 
-  public getRecentErrors(sessionId: string, limit: number = 10): ErrorEvent[] {
-    const errors = this.recentErrors.get(sessionId) || [];
-    return errors.slice(-limit);
-  }
 
-  public acknowledgeError(errorId: string): boolean {
-    for (const errors of this.recentErrors.values()) {
-      const error = errors.find(e => e.id === errorId);
-      if (error) {
-        error.acknowledged = true;
-        return true;
-      }
-    }
-    return false;
-  }
 
   public clearSession(sessionId: string): void {
     this.recentErrors.delete(sessionId);
