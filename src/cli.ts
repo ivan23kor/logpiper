@@ -283,7 +283,8 @@ and analysis in Claude Code`);
         if (existsSync(sessionFile)) {
           const session = JSON.parse(readFileSync(sessionFile, 'utf8'));
           if (data.type === 'session_end') {
-            session.status = 'stopped';
+            // Preserve the status set by the child close handler
+            session.status = this.session.status;
             session.endTime = data.data.endTime;
           } else if (data.type === 'process_error') {
             session.status = 'crashed';
@@ -602,7 +603,14 @@ and analysis in Claude Code`);
       // Flush any remaining chunk before ending session
       await this.flushChunk();
 
-      this.session.status = code === 0 ? 'stopped' : 'crashed';
+      // Distinguish between crashes and graceful terminations
+      // Common signals that indicate graceful shutdown: SIGINT, SIGTERM, SIGHUP
+      const isGracefulShutdown = signal === 'SIGINT' || signal === 'SIGTERM' || signal === 'SIGHUP' ||
+        // Also check for common signal exit codes: 130 (SIGINT), 143 (SIGTERM), 129 (SIGHUP)
+        code === 130 || code === 143 || code === 129;
+      const isSuccess = code === 0;
+      
+      this.session.status = isSuccess || isGracefulShutdown ? 'stopped' : 'crashed';
       this.session.endTime = new Date();
 
       await this.sendToMCPServer({
@@ -615,7 +623,13 @@ and analysis in Claude Code`);
         }
       });
 
-      console.log(`\n✅ Process ${code === 0 ? 'completed' : 'crashed'} (code: ${code})`);
+      if (isSuccess) {
+        console.log(`\n✅ Process completed successfully (code: ${code})`);
+      } else if (isGracefulShutdown) {
+        console.log(`\n⏹️  Process terminated gracefully by signal ${signal} (code: ${code})`);
+      } else {
+        console.log(`\n❌ Process crashed (code: ${code})`);
+      }
 
       // Wait a moment for cleanup to complete
       await new Promise(resolve => setTimeout(resolve, 1000));
