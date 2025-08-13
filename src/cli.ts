@@ -9,6 +9,7 @@ import { tmpdir } from 'os';
 import { readFileSync as readPackageJson } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { createInterface } from 'readline';
 import type { LogEntry, LogSession } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -66,9 +67,9 @@ class LogPiperCLI {
   }
 
   /**
-   * Check for duplicate sessions and warn user
+   * Check for duplicate sessions and offer to close them
    */
-  private checkForDuplicateSessions(projectDir: string, commandSignature: string): void {
+  private async checkForDuplicateSessions(projectDir: string, commandSignature: string): Promise<void> {
     if (!existsSync(this.dataDir)) {
       return;
     }
@@ -96,18 +97,143 @@ class LogPiperCLI {
       }
 
       if (activeSessions.length > 0) {
-        console.log(`\n⚠️  Warning: Found ${activeSessions.length} existing session(s) for the same command:`);
+        console.log(`\n⚠️  Found ${activeSessions.length} existing session(s) for the same command:`);
         for (const session of activeSessions) {
           const age = Date.now() - new Date(session.startTime).getTime();
           const ageMinutes = Math.floor(age / (1000 * 60));
           console.log(`  🔗 ${session.id} (${ageMinutes} minutes ago)`);
         }
-        console.log('\n💡 Multiple sessions may be capturing the same output.');
-        console.log('   This is normal if you\'re monitoring different aspects or instances.');
-        console.log('');
+        console.log('\n💡 Multiple sessions may capture duplicate output.');
+        
+        const choice = await this.promptUserForSessionCleanup(activeSessions);
+        await this.handleSessionCleanupChoice(choice, activeSessions);
       }
     } catch (error) {
       // Silently continue if we can't check for duplicates
+    }
+  }
+
+  /**
+   * Prompt user for session cleanup choice
+   */
+  private async promptUserForSessionCleanup(activeSessions: LogSession[]): Promise<string> {
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    return new Promise((resolve) => {
+      const prompt = activeSessions.length === 1 
+        ? '\n❓ Close existing session? (y/N/s): '
+        : '\n❓ Close existing sessions? (y/N/s for select): ';
+      
+      rl.question(prompt, (answer) => {
+        rl.close();
+        resolve(answer.trim().toLowerCase() || 'n');
+      });
+    });
+  }
+
+  /**
+   * Handle user choice for session cleanup
+   */
+  private async handleSessionCleanupChoice(choice: string, activeSessions: LogSession[]): Promise<void> {
+    if (choice === 'y' || choice === 'yes') {
+      // Close all sessions
+      console.log('\n🧹 Closing all existing sessions...');
+      for (const session of activeSessions) {
+        this.closeSession(session.id);
+      }
+      console.log(`✅ Closed ${activeSessions.length} session(s)\n`);
+    } else if (choice === 's' || choice === 'select') {
+      // Allow user to select which sessions to close
+      await this.selectiveSessionCleanup(activeSessions);
+    } else {
+      // Default: continue with existing sessions
+      console.log('📝 Continuing with existing sessions running...\n');
+    }
+  }
+
+  /**
+   * Allow user to selectively close sessions
+   */
+  private async selectiveSessionCleanup(activeSessions: LogSession[]): Promise<void> {
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    console.log('\n📋 Select sessions to close (enter numbers separated by spaces, or "all"):');
+    activeSessions.forEach((session, index) => {
+      const age = Date.now() - new Date(session.startTime).getTime();
+      const ageMinutes = Math.floor(age / (1000 * 60));
+      console.log(`  ${index + 1}. ${session.id} (${ageMinutes} minutes ago)`);
+    });
+
+    return new Promise((resolve) => {
+      rl.question('\n❓ Enter selection: ', (answer) => {
+        rl.close();
+        const selection = answer.trim().toLowerCase();
+        
+        if (selection === 'all') {
+          console.log('\n🧹 Closing all sessions...');
+          for (const session of activeSessions) {
+            this.closeSession(session.id);
+          }
+          console.log(`✅ Closed ${activeSessions.length} session(s)\n`);
+        } else if (selection) {
+          const indices = selection.split(/\s+/)
+            .map(num => parseInt(num) - 1)
+            .filter(idx => idx >= 0 && idx < activeSessions.length);
+          
+          if (indices.length > 0) {
+            console.log(`\n🧹 Closing ${indices.length} selected session(s)...`);
+            for (const idx of indices) {
+              this.closeSession(activeSessions[idx].id);
+            }
+            console.log(`✅ Closed ${indices.length} session(s)\n`);
+          } else {
+            console.log('📝 No valid selections made, continuing...\n');
+          }
+        } else {
+          console.log('📝 No selections made, continuing...\n');
+        }
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Close a specific session by marking it as stopped and cleaning up
+   */
+  private closeSession(sessionId: string): void {
+    try {
+      const sessionFile = join(this.dataDir, `${sessionId}.json`);
+      const logsFile = join(this.dataDir, `${sessionId}.logs`);
+      
+      if (existsSync(sessionFile)) {
+        const session = JSON.parse(readFileSync(sessionFile, 'utf8'));
+        session.status = 'stopped';
+        session.endTime = new Date();
+        session.autoCleanupScheduled = true;
+        writeFileSync(sessionFile, JSON.stringify(session, null, 2));
+        
+        // Schedule cleanup
+        setTimeout(() => {
+          try {
+            if (existsSync(sessionFile)) unlinkSync(sessionFile);
+            if (existsSync(logsFile)) unlinkSync(logsFile);
+          } catch (cleanupError) {
+            if (this.config.verbose) {
+              console.error(`Failed to cleanup session ${sessionId}:`, cleanupError);
+            }
+          }
+        }, 500);
+      }
+    } catch (error) {
+      if (this.config.verbose) {
+        console.error(`Failed to close session ${sessionId}:`, error);
+      }
     }
   }
 
@@ -223,12 +349,12 @@ and analysis in Claude Code`);
     return { command, args };
   }
 
-  private initializeSession(command: string, args: string[]): void {
+  private async initializeSession(command: string, args: string[]): Promise<void> {
     const projectDir = resolve(process.cwd());
     const commandSignature = `${command} ${args.join(' ')}`;
 
     // Check for existing sessions with the same command in the same directory
-    this.checkForDuplicateSessions(projectDir, commandSignature);
+    await this.checkForDuplicateSessions(projectDir, commandSignature);
 
     this.session = {
       id: this.sessionId,
@@ -486,7 +612,7 @@ and analysis in Claude Code`);
   }
 
   private async runPipeMode(): Promise<void> {
-    this.initializeSession('pipe', []);
+    await this.initializeSession('pipe', []);
 
     console.error(`🚀 logpiper pipe mode started`);
     console.error(`📁 Project: ${this.session.projectDir}`);
@@ -572,7 +698,7 @@ and analysis in Claude Code`);
       return;
     }
 
-    this.initializeSession(command, args);
+    await this.initializeSession(command, args);
 
     console.log(`🚀 logpiper starting: ${this.session.command} ${this.session.args.join(' ')}`);
     console.log(`📁 Project: ${this.session.projectDir}`);
