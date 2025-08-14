@@ -96,6 +96,10 @@ logpiper nodemon app.js
 | `get_logs_paginated` | Get logs with cursor-based pagination and automatic chunking | Large log file navigation |
 | `cleanup_sessions` | Cleanup sessions: smart cleanup based on criteria or complete reset | Session management (mode: "smart" or "all") |
 
+### Additional Features
+
+🔒 **Token Limiting**: MCP responses automatically limited to 25,000 tokens to prevent overwhelming Claude Code
+
 ## Contributing
 
 1. Fork the repository

@@ -14,6 +14,7 @@ import {
 import { LogManager } from './log-manager.js';
 import { ErrorDetector } from './error-detector.js';
 import { NotificationSystem } from './notification.js';
+import { TokenLimiter } from './token-limiter.js';
 import type { LogEntry, LogSession } from './types.js';
 
 class LogPiperMcpServer {
@@ -356,18 +357,15 @@ class LogPiperMcpServer {
       }
 
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            sessionId,
-            logs: result.data,
-            total: result.total,
-            nextCursor: result.nextCursor,
-            hasMore: result.hasMore,
-            hasPrevious: result.hasPrevious,
-            logsConsumed: consumeLogs && result.data.length > 0,
-          }, null, 2),
-        }],
+        content: [this.applyTokenLimit({
+          sessionId,
+          logs: result.data,
+          total: result.total,
+          nextCursor: result.nextCursor,
+          hasMore: result.hasMore,
+          hasPrevious: result.hasPrevious,
+          logsConsumed: consumeLogs && result.data.length > 0,
+        })],
       };
     } else {
       const activeSessions = this.logManager.getActiveSessions();
@@ -397,17 +395,14 @@ class LogPiperMcpServer {
       const hasMore = allResults.length > limit;
 
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            logs: finalResults,
-            total: totalCount,
-            nextCursor: finalResults.length > 0 ? Math.max(...finalResults.map(l => l.lineNumber)) : since,
-            hasMore,
-            hasPrevious: since > 0,
-            logsConsumed: consumeLogs && finalResults.length > 0,
-          }, null, 2),
-        }],
+        content: [this.applyTokenLimit({
+          logs: finalResults,
+          total: totalCount,
+          nextCursor: finalResults.length > 0 ? Math.max(...finalResults.map(l => l.lineNumber)) : since,
+          hasMore,
+          hasPrevious: since > 0,
+          logsConsumed: consumeLogs && finalResults.length > 0,
+        })],
       };
     }
   }
@@ -428,20 +423,17 @@ class LogPiperMcpServer {
     const hasMore = offset + limit < sessions.length;
 
     return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          sessions: paginatedSessions.map(session => ({
-            ...session,
-            stats: this.logManager.getSessionStats(session.id),
-          })),
-          total: sessions.length,
-          offset,
-          limit,
-          hasMore,
-          nextOffset: hasMore ? offset + limit : null,
-        }, null, 2),
-      }],
+      content: [this.applyTokenLimit({
+        sessions: paginatedSessions.map(session => ({
+          ...session,
+          stats: this.logManager.getSessionStats(session.id),
+        })),
+        total: sessions.length,
+        offset,
+        limit,
+        hasMore,
+        nextOffset: hasMore ? offset + limit : null,
+      })],
     };
   }
 
@@ -458,21 +450,18 @@ class LogPiperMcpServer {
       const result = await this.logManager.searchLogs(sessionId, query, offset, limit);
 
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            sessionId,
-            query,
-            results: result.data,
-            total: result.total,
-            offset,
-            limit,
-            hasMore: result.hasMore,
-            hasPrevious: result.hasPrevious,
-            nextOffset: result.nextCursor,
-            prevOffset: result.prevCursor,
-          }, null, 2),
-        }],
+        content: [this.applyTokenLimit({
+          sessionId,
+          query,
+          results: result.data,
+          total: result.total,
+          offset,
+          limit,
+          hasMore: result.hasMore,
+          hasPrevious: result.hasPrevious,
+          nextOffset: result.nextCursor,
+          prevOffset: result.prevCursor,
+        })],
       };
     } else {
       const sessions = this.logManager.getActiveSessions();
@@ -492,20 +481,17 @@ class LogPiperMcpServer {
       const hasMore = allResults.length > limit;
 
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            query,
-            results: finalResults,
-            total: totalCount,
-            offset,
-            limit,
-            hasMore,
-            hasPrevious: offset > 0,
-            nextOffset: hasMore ? offset + limit : null,
-            prevOffset: offset > 0 ? Math.max(0, offset - limit) : null,
-          }, null, 2),
-        }],
+        content: [this.applyTokenLimit({
+          query,
+          results: finalResults,
+          total: totalCount,
+          offset,
+          limit,
+          hasMore,
+          hasPrevious: offset > 0,
+          nextOffset: hasMore ? offset + limit : null,
+          prevOffset: offset > 0 ? Math.max(0, offset - limit) : null,
+        })],
       };
     }
   }
@@ -535,22 +521,19 @@ class LogPiperMcpServer {
     }
 
     return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          sessionId,
-          logs: result.data,
-          total: result.total,
-          cursor,
-          limit,
-          reverse,
-          nextCursor: result.nextCursor,
-          prevCursor: result.prevCursor,
-          hasMore: result.hasMore,
-          hasPrevious: result.hasPrevious,
-          logsConsumed: consumeLogs && result.data.length > 0,
-        }, null, 2),
-      }],
+      content: [this.applyTokenLimit({
+        sessionId,
+        logs: result.data,
+        total: result.total,
+        cursor,
+        limit,
+        reverse,
+        nextCursor: result.nextCursor,
+        prevCursor: result.prevCursor,
+        hasMore: result.hasMore,
+        hasPrevious: result.hasPrevious,
+        logsConsumed: consumeLogs && result.data.length > 0,
+      })],
     };
   }
 
@@ -567,45 +550,36 @@ class LogPiperMcpServer {
       // Complete reset mode
       if (!confirm && !force) {
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              success: false,
-              message: 'Reset operation cancelled - confirm parameter must be set to true',
-              warning: 'This operation will delete ALL sessions and logs permanently',
-              mode: 'all',
-            }, null, 2),
-          }],
+          content: [this.applyTokenLimit({
+            success: false,
+            message: 'Reset operation cancelled - confirm parameter must be set to true',
+            warning: 'This operation will delete ALL sessions and logs permanently',
+            mode: 'all',
+          })],
         };
       }
 
       const result = this.logManager.resetAllSessions();
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            ...result,
-            operation: 'cleanup_sessions',
-            mode: 'all',
-            timestamp: new Date().toISOString(),
-          }, null, 2),
-        }],
+        content: [this.applyTokenLimit({
+          ...result,
+          operation: 'cleanup_sessions',
+          mode: 'all',
+          timestamp: new Date().toISOString(),
+        })],
       };
     } else {
       // Smart cleanup mode
       const result = this.logManager.cleanupOldSessions(dryRun, force);
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            ...result,
-            operation: 'cleanup_sessions',
-            mode: 'smart',
-            dryRun,
-            force,
-            timestamp: new Date().toISOString(),
-          }, null, 2),
-        }],
+        content: [this.applyTokenLimit({
+          ...result,
+          operation: 'cleanup_sessions',
+          mode: 'smart',
+          dryRun,
+          force,
+          timestamp: new Date().toISOString(),
+        })],
       };
     }
   }
@@ -689,6 +663,23 @@ class LogPiperMcpServer {
     } catch (error) {
       // Silently fail - not critical for functionality
     }
+  }
+
+  /**
+   * Apply token limiting to MCP response content
+   */
+  private applyTokenLimit(responseData: any): any {
+    const jsonString = JSON.stringify(responseData, null, 2);
+    const limitResult = TokenLimiter.limitJsonResponse(jsonString);
+    
+    if (limitResult.truncated) {
+      console.error(`Response truncated: ${limitResult.originalTokens} → ${limitResult.finalTokens} tokens (limit: 25,000)`);
+    }
+    
+    return {
+      type: 'text',
+      text: limitResult.content,
+    };
   }
 
   /**
