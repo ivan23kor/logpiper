@@ -100,7 +100,17 @@ export class LogManager implements SessionManager, LogStorage {
   }
 
   getActiveSessions(): LogSession[] {
-    return this.listSessions().filter(session => session.status === 'running');
+    const sessions = this.listSessions().filter(session => session.status === 'running');
+    
+    // Filter out stale sessions that haven't been active recently
+    const now = new Date();
+    return sessions.filter(session => {
+      const inactiveTime = now.getTime() - new Date(session.lastActivity).getTime();
+      const inactiveHours = inactiveTime / (1000 * 60 * 60);
+      
+      // Consider sessions inactive if no activity for more than 24 hours
+      return inactiveHours < 24;
+    });
   }
 
   updateSession(sessionId: string, updates: Partial<LogSession>): void {
@@ -250,9 +260,142 @@ export class LogManager implements SessionManager, LogStorage {
   }
 
   cleanup(): void {
-    // File-based cleanup would require removing old session files
-    // This method exists for interface compatibility
-    // Could implement by scanning dataDir for old files
+    this.cleanupOldSessions();
+  }
+
+  /**
+   * Automatically cleanup old sessions based on intelligent criteria
+   * @param dryRun - If true, only show what would be cleaned up without deleting
+   * @param force - If true, use more aggressive cleanup criteria
+   */
+  cleanupOldSessions(dryRun: boolean = false, force: boolean = false): {
+    success: boolean;
+    message: string;
+    sessionsAnalyzed: number;
+    sessionsToDelete: number;
+    deletedSessions: number;
+    criteria: string[];
+    sessions: Array<{
+      sessionId: string;
+      reason: string;
+      age: string;
+      status: string;
+      logCount: number;
+      readProgress: number;
+    }>;
+    errors: string[];
+  } {
+    const now = new Date();
+    const sessions = this.listSessions();
+    
+    const toDelete: Array<{
+      sessionId: string;
+      reason: string;
+      age: string;
+      status: string;
+      logCount: number;
+      readProgress: number;
+    }> = [];
+    
+    const errors: string[] = [];
+    let deletedCount = 0;
+    
+    // Define cleanup criteria based on force flag
+    const criteria = [
+      force ? 'Stopped/crashed sessions older than 30 minutes' : 'Stopped/crashed sessions older than 2 hours',
+      'Running sessions with no activity for 24+ hours (stale)',
+      force ? 'Sessions with no logs older than 30 minutes' : 'Sessions with no logs older than 1 hour',
+      'Sessions where all logs have been read and session is completed'
+    ];
+    
+    if (force) {
+      criteria.push('Empty sessions less than 5 minutes old (likely failed starts)');
+    }
+    
+    for (const session of sessions) {
+      const sessionAge = now.getTime() - new Date(session.lastActivity).getTime();
+      const sessionAgeHours = sessionAge / (1000 * 60 * 60);
+      const sessionAgeMinutes = sessionAge / (1000 * 60);
+      
+      let shouldDelete = false;
+      let reason = '';
+      
+      // Get log count and read progress
+      const logCount = this.getLogCountSync(session.id);
+      const readProgress = logCount > 0 ? Math.min(100, (session.readCursor / logCount) * 100) : 0;
+      
+      // Cleanup criteria:
+      if (session.status === 'stopped' || session.status === 'crashed') {
+        const ageThreshold = force ? 0.5 : 2; // 30 minutes vs 2 hours
+        if (sessionAgeHours > ageThreshold) {
+          shouldDelete = true;
+          reason = `${session.status} session older than ${ageThreshold === 0.5 ? '30 minutes' : '2 hours'}`;
+        }
+      } else if (session.status === 'running') {
+        if (sessionAgeHours > 24) {
+          shouldDelete = true;
+          reason = 'stale running session (24+ hours inactive)';
+        }
+      }
+      
+      // Sessions with no logs
+      if (logCount === 0) {
+        const ageThreshold = force ? 0.5 : 1; // 30 minutes vs 1 hour
+        if (sessionAgeHours > ageThreshold) {
+          shouldDelete = true;
+          reason = `session with no logs older than ${ageThreshold === 0.5 ? '30 minutes' : '1 hour'}`;
+        } else if (force && sessionAgeMinutes < 5 && sessionAgeMinutes > 2) {
+          shouldDelete = true;
+          reason = 'likely failed session start (empty after 2+ minutes)';
+        }
+      }
+      
+      // Sessions where all logs have been read and session is complete
+      if (!shouldDelete && session.status !== 'running' && logCount > 0 && readProgress >= 100) {
+        if (sessionAgeHours > (force ? 0.25 : 1)) { // 15 minutes vs 1 hour
+          shouldDelete = true;
+          reason = 'completed session with all logs read';
+        }
+      }
+      
+      if (shouldDelete) {
+        toDelete.push({
+          sessionId: session.id,
+          reason,
+          age: sessionAgeHours > 1 ? `${sessionAgeHours.toFixed(1)}h` : `${sessionAgeMinutes.toFixed(0)}m`,
+          status: session.status,
+          logCount,
+          readProgress: Math.round(readProgress)
+        });
+      }
+    }
+    
+    // Actually delete sessions if not dry run
+    if (!dryRun) {
+      for (const item of toDelete) {
+        const result = this.resetSession(item.sessionId);
+        if (result.success) {
+          deletedCount++;
+        } else {
+          errors.push(...result.errors);
+        }
+      }
+    }
+    
+    const message = dryRun 
+      ? `Dry run complete: would clean up ${toDelete.length} sessions`
+      : `Cleaned up ${deletedCount} sessions${errors.length > 0 ? ` (${errors.length} errors)` : ''}`;
+    
+    return {
+      success: errors.length === 0,
+      message,
+      sessionsAnalyzed: sessions.length,
+      sessionsToDelete: toDelete.length,
+      deletedSessions: deletedCount,
+      criteria,
+      sessions: toDelete,
+      errors
+    };
   }
 
   /**
@@ -380,119 +523,7 @@ export class LogManager implements SessionManager, LogStorage {
     return result;
   }
 
-  /**
-   * Clear logs for a specific session (keep session metadata)
-   */
-  clearSessionLogs(sessionId: string): {
-    success: boolean;
-    message: string;
-    logsDeleted: boolean;
-    errors: string[];
-  } {
-    const result = {
-      success: false,
-      message: '',
-      logsDeleted: false,
-      errors: [] as string[]
-    };
 
-    try {
-      const logsFile = join(this.dataDir, `${sessionId}.logs`);
-
-      if (existsSync(logsFile)) {
-        try {
-          unlinkSync(logsFile);
-          result.logsDeleted = true;
-          result.success = true;
-          result.message = `Successfully cleared logs for session ${sessionId}`;
-        } catch (error) {
-          result.errors.push(`Failed to delete logs file: ${error}`);
-          result.message = `Failed to clear logs for session ${sessionId}: ${error}`;
-        }
-      } else {
-        result.success = true;
-        result.message = `No logs found for session ${sessionId}`;
-      }
-
-    } catch (error) {
-      result.success = false;
-      result.message = `Failed to clear logs for session ${sessionId}: ${error}`;
-      result.errors.push(`Clear logs error: ${error}`);
-    }
-
-    return result;
-  }
-
-  /**
-   * Reset sessions by criteria (status, age, etc.)
-   */
-  resetSessionsByCriteria(criteria: {
-    status?: 'running' | 'stopped' | 'crashed';
-    olderThan?: Date;
-    projectDir?: string;
-  }): {
-    success: boolean;
-    message: string;
-    deletedSessions: number;
-    deletedLogFiles: number;
-    errors: string[];
-    deletedSessionIds: string[];
-  } {
-    const result = {
-      success: false,
-      message: '',
-      deletedSessions: 0,
-      deletedLogFiles: 0,
-      errors: [] as string[],
-      deletedSessionIds: [] as string[]
-    };
-
-    try {
-      const allSessions = this.listSessions();
-      const sessionsToDelete = allSessions.filter(session => {
-        // Filter by status
-        if (criteria.status && session.status !== criteria.status) {
-          return false;
-        }
-
-        // Filter by age
-        if (criteria.olderThan && session.lastActivity > criteria.olderThan) {
-          return false;
-        }
-
-        // Filter by project directory
-        if (criteria.projectDir && session.projectDir !== criteria.projectDir) {
-          return false;
-        }
-
-        return true;
-      });
-
-      for (const session of sessionsToDelete) {
-        const resetResult = this.resetSession(session.id);
-        
-        if (resetResult.success) {
-          result.deletedSessionIds.push(session.id);
-          if (resetResult.sessionDeleted) result.deletedSessions++;
-          if (resetResult.logsDeleted) result.deletedLogFiles++;
-        } else {
-          result.errors.push(...resetResult.errors);
-        }
-      }
-
-      result.success = result.errors.length === 0;
-      result.message = result.success
-        ? `Successfully reset ${sessionsToDelete.length} sessions matching criteria`
-        : `Partially completed reset with ${result.errors.length} errors. Reset ${result.deletedSessionIds.length} sessions.`;
-
-    } catch (error) {
-      result.success = false;
-      result.message = `Failed to reset sessions by criteria: ${error}`;
-      result.errors.push(`Criteria reset error: ${error}`);
-    }
-
-    return result;
-  }
 
   getSessionsOverview(): {
     total: number;
@@ -561,16 +592,6 @@ export class LogManager implements SessionManager, LogStorage {
     return this.logReader.readLogsPaginated(logsFile, cursor, limit, reverse);
   }
 
-  /**
-   * Get recent logs (latest first) with pagination
-   */
-  async getRecentLogsPaginated(
-    sessionId: string,
-    limit: number = 50
-  ): Promise<PaginationResult<LogEntry>> {
-    const logsFile = join(this.dataDir, `${sessionId}.logs`);
-    return this.logReader.readLogsPaginated(logsFile, 0, limit, true);
-  }
 
   /**
    * Get logs by time range with pagination

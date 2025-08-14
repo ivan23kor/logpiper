@@ -23,9 +23,19 @@ npm install -g logpiper-mcp
 This provides:
 - **CLI tool**: `logpiper` command for log collection
 - **MCP server**: `logpiper-mcp` for IDE integration
-- **Claude Code agent**: installation script will offer to install `logpiper-monitor` agent to your Claude Code agents directory for automatic log monitoring with Claude Code.
+- **Claude Code agent**: Install the monitoring agent with `logpiper --install-agent`
 
-If you installed `logpiper-mcp` locally, you can install `logpiper-monitor` agent manually by running `logpiper --install-agent`.
+### Agent Installation
+
+To install the Claude Code monitoring agent:
+
+```bash
+logpiper --install-agent
+```
+
+This will interactively guide you through installing the logpiper-monitor agent to your Claude Code agents directory.
+
+### MCP Server Configuration
 
 Add `logpiper` to your IDE configuration, e.g. `~/.claude/settings.json`:
 
@@ -82,16 +92,9 @@ logpiper nodemon app.js
 |------|-------------|-------|
 | `get_new_logs` | Get new logs since cursor position (streaming) | Real-time log monitoring |
 | `list_sessions` | List all logging sessions with metadata | Session management |
-| `get_session_info` | Get detailed information about specific session | Debugging context |
 | `search_logs` | Search through logs with query string | Error investigation |
-| `acknowledge_error` | Mark an error as acknowledged | Error management |
-| `get_error_history` | Get recent errors for a session | Error tracking |
 | `get_logs_paginated` | Get logs with cursor-based pagination and automatic chunking | Large log file navigation |
-| `get_recent_logs` | Get recent logs (latest first) with pagination | Quick access to latest logs |
-| `reset_all_sessions` | Reset all sessions and logs - completely clears all LogPiper data | Complete cleanup |
-| `reset_session` | Reset a specific session - removes session and its logs | Individual session cleanup |
-| `clear_session_logs` | Clear logs for session while keeping session metadata | Log cleanup only |
-| `reset_sessions_by_criteria` | Reset sessions matching specific criteria | Selective cleanup |
+| `cleanup_sessions` | Cleanup sessions: smart cleanup based on criteria or complete reset | Session management (mode: "smart" or "all") |
 
 ## Contributing
 

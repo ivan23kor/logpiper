@@ -102,10 +102,10 @@ class LogPiperMcpServer {
               .join('\n');
           } else {
             // For large logs, get recent ones and add a message
-            const result = await this.logManager.getRecentLogsPaginated(sessionId, 2000);
+            const result = await this.logManager.getLogsPaginated(sessionId, 0, 2000, true);
             logContent = `# LogPiper: Large log file detected (${totalCount} entries)
 # Showing most recent 2000 entries. Use MCP tools for paginated access.
-# Available tools: get_logs_paginated, get_recent_logs, search_logs
+# Available tools: get_logs_paginated, search_logs
 
 ` + result.data
               .map(log => `[${log.timestamp.toISOString()}] [${log.logLevel.toUpperCase()}] ${log.content}`)
@@ -185,6 +185,11 @@ class LogPiperMcpServer {
                   description: 'Maximum number of log entries to return',
                   default: 100,
                 },
+                consumeLogs: {
+                  type: 'boolean',
+                  description: 'Whether to remove logs after fetching them (default: true)',
+                  default: true,
+                },
               },
             },
           },
@@ -211,20 +216,6 @@ class LogPiperMcpServer {
                   default: 0,
                 },
               },
-            },
-          },
-          {
-            name: 'get_session_info',
-            description: 'Get detailed information about a specific session',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                sessionId: {
-                  type: 'string',
-                  description: 'Session ID to get information for',
-                },
-              },
-              required: ['sessionId'],
             },
           },
           {
@@ -256,39 +247,6 @@ class LogPiperMcpServer {
             },
           },
           {
-            name: 'acknowledge_error',
-            description: 'Mark an error as acknowledged',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                errorId: {
-                  type: 'string',
-                  description: 'ID of the error to acknowledge',
-                },
-              },
-              required: ['errorId'],
-            },
-          },
-          {
-            name: 'get_error_history',
-            description: 'Get recent errors for a session',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                sessionId: {
-                  type: 'string',
-                  description: 'Session ID to get errors for',
-                },
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of errors to return',
-                  default: 10,
-                },
-              },
-              required: ['sessionId'],
-            },
-          },
-          {
             name: 'get_logs_paginated',
             description: 'Get logs with cursor-based pagination and automatic chunking',
             inputSchema: {
@@ -313,89 +271,40 @@ class LogPiperMcpServer {
                   description: 'Read in reverse order (latest first)',
                   default: false,
                 },
+                consumeLogs: {
+                  type: 'boolean',
+                  description: 'Whether to remove logs after fetching them (default: true)',
+                  default: true,
+                },
               },
               required: ['sessionId'],
             },
           },
           {
-            name: 'get_recent_logs',
-            description: 'Get recent logs (latest first) with pagination',
+            name: 'cleanup_sessions',
+            description: 'Cleanup sessions: intelligent cleanup based on criteria or complete reset of all data',
             inputSchema: {
               type: 'object',
               properties: {
-                sessionId: {
+                mode: {
                   type: 'string',
-                  description: 'Session ID to get logs from',
+                  enum: ['smart', 'all'],
+                  description: 'Cleanup mode: "smart" for intelligent cleanup, "all" for complete reset',
+                  default: 'smart',
                 },
-                limit: {
-                  type: 'number',
-                  description: 'Maximum number of log entries to return',
-                  default: 50,
+                dryRun: {
+                  type: 'boolean',
+                  description: 'Show what would be cleaned up without actually deleting (smart mode only)',
+                  default: false,
                 },
-              },
-              required: ['sessionId'],
-            },
-          },
-          {
-            name: 'reset_all_sessions',
-            description: 'Reset all sessions and logs - completely clears all LogPiper data',
-            inputSchema: {
-              type: 'object',
-              properties: {
+                force: {
+                  type: 'boolean',
+                  description: 'Use aggressive cleanup criteria (smart mode) or skip confirmation (all mode)',
+                  default: false,
+                },
                 confirm: {
                   type: 'boolean',
-                  description: 'Must be set to true to confirm the destructive operation',
-                },
-              },
-              required: ['confirm'],
-            },
-          },
-          {
-            name: 'reset_session',
-            description: 'Reset a specific session - removes session and its logs',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                sessionId: {
-                  type: 'string',
-                  description: 'Session ID to reset',
-                },
-              },
-              required: ['sessionId'],
-            },
-          },
-          {
-            name: 'clear_session_logs',
-            description: 'Clear logs for a session while keeping session metadata',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                sessionId: {
-                  type: 'string',
-                  description: 'Session ID to clear logs for',
-                },
-              },
-              required: ['sessionId'],
-            },
-          },
-          {
-            name: 'reset_sessions_by_criteria',
-            description: 'Reset sessions matching specific criteria',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                status: {
-                  type: 'string',
-                  enum: ['running', 'stopped', 'crashed'],
-                  description: 'Reset sessions with this status',
-                },
-                olderThanDays: {
-                  type: 'number',
-                  description: 'Reset sessions older than this many days',
-                },
-                projectDir: {
-                  type: 'string',
-                  description: 'Reset sessions from this project directory',
+                  description: 'Must be true for "all" mode to confirm destructive operation',
                 },
               },
             },
@@ -412,26 +321,12 @@ class LogPiperMcpServer {
           return this.handleGetNewLogs(args as any);
         case 'list_sessions':
           return this.handleListSessions(args as any);
-        case 'get_session_info':
-          return this.handleGetSessionInfo(args as any);
         case 'search_logs':
           return this.handleSearchLogs(args as any);
-        case 'acknowledge_error':
-          return this.handleAcknowledgeError(args as any);
-        case 'get_error_history':
-          return this.handleGetErrorHistory(args as any);
         case 'get_logs_paginated':
           return this.handleGetLogsPaginated(args as any);
-        case 'get_recent_logs':
-          return this.handleGetRecentLogs(args as any);
-        case 'reset_all_sessions':
-          return this.handleResetAllSessions(args as any);
-        case 'reset_session':
-          return this.handleResetSession(args as any);
-        case 'clear_session_logs':
-          return this.handleClearSessionLogs(args as any);
-        case 'reset_sessions_by_criteria':
-          return this.handleResetSessionsByCriteria(args as any);
+        case 'cleanup_sessions':
+          return this.handleCleanupSessions(args as any);
         default:
           throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
       }
@@ -442,11 +337,23 @@ class LogPiperMcpServer {
     sessionId?: string;
     since?: number;
     limit?: number;
+    consumeLogs?: boolean;
   }) {
-    const { sessionId, since = 0, limit = 100 } = args;
+    const { sessionId, since = 0, limit = 100, consumeLogs = true } = args;
 
     if (sessionId) {
       const result = await this.logManager.getNewLogs(sessionId, since, limit);
+
+      // Update read cursor to track what has been read
+      if (result.data.length > 0) {
+        const maxLineNumber = Math.max(...result.data.map(log => log.lineNumber));
+        this.updateSessionReadCursor(sessionId, maxLineNumber);
+
+        // Remove consumed logs if requested
+        if (consumeLogs) {
+          await this.removeConsumedLogs(sessionId, maxLineNumber);
+        }
+      }
 
       return {
         content: [{
@@ -458,6 +365,7 @@ class LogPiperMcpServer {
             nextCursor: result.nextCursor,
             hasMore: result.hasMore,
             hasPrevious: result.hasPrevious,
+            logsConsumed: consumeLogs && result.data.length > 0,
           }, null, 2),
         }],
       };
@@ -470,6 +378,16 @@ class LogPiperMcpServer {
         const result = await this.logManager.getNewLogs(session.id, since, limit);
         allResults.push(...result.data);
         totalCount += result.total;
+
+        // Update read cursor and remove consumed logs for each session
+        if (result.data.length > 0) {
+          const maxLineNumber = Math.max(...result.data.map(log => log.lineNumber));
+          this.updateSessionReadCursor(session.id, maxLineNumber);
+
+          if (consumeLogs) {
+            await this.removeConsumedLogs(session.id, maxLineNumber);
+          }
+        }
       }
 
       allResults.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
@@ -487,6 +405,7 @@ class LogPiperMcpServer {
             nextCursor: finalResults.length > 0 ? Math.max(...finalResults.map(l => l.lineNumber)) : since,
             hasMore,
             hasPrevious: since > 0,
+            logsConsumed: consumeLogs && finalResults.length > 0,
           }, null, 2),
         }],
       };
@@ -526,28 +445,6 @@ class LogPiperMcpServer {
     };
   }
 
-  private async handleGetSessionInfo(args: { sessionId: string }) {
-    const { sessionId } = args;
-    const session = this.logManager.getSession(sessionId);
-
-    if (!session) {
-      throw new McpError(ErrorCode.InvalidRequest, `Session ${sessionId} not found`);
-    }
-
-    const stats = this.logManager.getSessionStats(sessionId);
-    const recentErrors = this.errorDetector.getRecentErrors(sessionId);
-
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          session,
-          stats,
-          recentErrors,
-        }, null, 2),
-      }],
-    };
-  }
 
   private async handleSearchLogs(args: {
     sessionId?: string;
@@ -613,46 +510,29 @@ class LogPiperMcpServer {
     }
   }
 
-  private async handleAcknowledgeError(args: { errorId: string }) {
-    const { errorId } = args;
-    const acknowledged = this.errorDetector.acknowledgeError(errorId);
 
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          errorId,
-          acknowledged,
-        }),
-      }],
-    };
-  }
-
-  private async handleGetErrorHistory(args: { sessionId: string; limit?: number }) {
-    const { sessionId, limit = 10 } = args;
-    const errors = this.errorDetector.getRecentErrors(sessionId, limit);
-
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          sessionId,
-          errors,
-          total: errors.length,
-        }, null, 2),
-      }],
-    };
-  }
 
   private async handleGetLogsPaginated(args: {
     sessionId: string;
     cursor?: number;
     limit?: number;
     reverse?: boolean;
+    consumeLogs?: boolean;
   }) {
-    const { sessionId, cursor = 0, limit = 100, reverse = false } = args;
+    const { sessionId, cursor = 0, limit = 100, reverse = false, consumeLogs = true } = args;
 
     const result = await this.logManager.getLogsPaginated(sessionId, cursor, limit, reverse);
+
+    // Update read cursor to track what has been read
+    if (result.data.length > 0) {
+      const maxLineNumber = Math.max(...result.data.map(log => log.lineNumber));
+      this.updateSessionReadCursor(sessionId, maxLineNumber);
+
+      // Remove consumed logs if requested
+      if (consumeLogs) {
+        await this.removeConsumedLogs(sessionId, maxLineNumber);
+      }
+    }
 
     return {
       content: [{
@@ -668,132 +548,71 @@ class LogPiperMcpServer {
           prevCursor: result.prevCursor,
           hasMore: result.hasMore,
           hasPrevious: result.hasPrevious,
+          logsConsumed: consumeLogs && result.data.length > 0,
         }, null, 2),
       }],
     };
   }
 
-  private async handleGetRecentLogs(args: {
-    sessionId: string;
-    limit?: number;
+
+  private async handleCleanupSessions(args: {
+    mode?: 'smart' | 'all';
+    dryRun?: boolean;
+    force?: boolean;
+    confirm?: boolean;
   }) {
-    const { sessionId, limit = 50 } = args;
+    const { mode = 'smart', dryRun = false, force = false, confirm } = args;
 
-    const result = await this.logManager.getRecentLogsPaginated(sessionId, limit);
+    if (mode === 'all') {
+      // Complete reset mode
+      if (!confirm && !force) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              success: false,
+              message: 'Reset operation cancelled - confirm parameter must be set to true',
+              warning: 'This operation will delete ALL sessions and logs permanently',
+              mode: 'all',
+            }, null, 2),
+          }],
+        };
+      }
 
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          sessionId,
-          logs: result.data,
-          total: result.total,
-          limit,
-          nextCursor: result.nextCursor,
-          prevCursor: result.prevCursor,
-          hasMore: result.hasMore,
-          hasPrevious: result.hasPrevious,
-        }, null, 2),
-      }],
-    };
-  }
-
-  private async handleResetAllSessions(args: { confirm: boolean }) {
-    const { confirm } = args;
-
-    if (!confirm) {
+      const result = this.logManager.resetAllSessions();
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
-            success: false,
-            message: 'Reset operation cancelled - confirm parameter must be set to true',
-            warning: 'This operation will delete ALL sessions and logs permanently',
+            ...result,
+            operation: 'cleanup_sessions',
+            mode: 'all',
+            timestamp: new Date().toISOString(),
+          }, null, 2),
+        }],
+      };
+    } else {
+      // Smart cleanup mode
+      const result = this.logManager.cleanupOldSessions(dryRun, force);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ...result,
+            operation: 'cleanup_sessions',
+            mode: 'smart',
+            dryRun,
+            force,
+            timestamp: new Date().toISOString(),
           }, null, 2),
         }],
       };
     }
-
-    const result = this.logManager.resetAllSessions();
-
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          ...result,
-          operation: 'reset_all_sessions',
-          timestamp: new Date().toISOString(),
-        }, null, 2),
-      }],
-    };
   }
 
-  private async handleResetSession(args: { sessionId: string }) {
-    const { sessionId } = args;
-    const result = this.logManager.resetSession(sessionId);
 
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          ...result,
-          operation: 'reset_session',
-          sessionId,
-          timestamp: new Date().toISOString(),
-        }, null, 2),
-      }],
-    };
-  }
 
-  private async handleClearSessionLogs(args: { sessionId: string }) {
-    const { sessionId } = args;
-    const result = this.logManager.clearSessionLogs(sessionId);
 
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          ...result,
-          operation: 'clear_session_logs',
-          sessionId,
-          timestamp: new Date().toISOString(),
-        }, null, 2),
-      }],
-    };
-  }
-
-  private async handleResetSessionsByCriteria(args: {
-    status?: 'running' | 'stopped' | 'crashed';
-    olderThanDays?: number;
-    projectDir?: string;
-  }) {
-    const { status, olderThanDays, projectDir } = args;
-
-    const criteria: any = {};
-    if (status) criteria.status = status;
-    if (projectDir) criteria.projectDir = projectDir;
-    if (olderThanDays !== undefined) {
-      criteria.olderThan = new Date(Date.now() - (olderThanDays * 24 * 60 * 60 * 1000));
-    }
-
-    const result = this.logManager.resetSessionsByCriteria(criteria);
-
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          ...result,
-          operation: 'reset_sessions_by_criteria',
-          criteria: {
-            status,
-            olderThanDays,
-            projectDir,
-          },
-          timestamp: new Date().toISOString(),
-        }, null, 2),
-      }],
-    };
-  }
 
   private setupIncomingLogHandlers(): void {
     // Handle incoming data from CLI instances
@@ -849,10 +668,79 @@ class LogPiperMcpServer {
     }
   }
 
+  /**
+   * Update the read cursor for a session to track which logs have been read
+   */
+  private updateSessionReadCursor(sessionId: string, lineNumber: number): void {
+    try {
+      const { join } = require('path');
+      const { tmpdir } = require('os');
+      const fs = require('fs');
+      
+      const sessionFile = join(tmpdir(), 'logpiper', `${sessionId}.json`);
+      if (fs.existsSync(sessionFile)) {
+        const sessionData = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+        if (lineNumber > sessionData.readCursor) {
+          sessionData.readCursor = lineNumber;
+          sessionData.lastActivity = new Date().toISOString();
+          fs.writeFileSync(sessionFile, JSON.stringify(sessionData, null, 2));
+        }
+      }
+    } catch (error) {
+      // Silently fail - not critical for functionality
+    }
+  }
+
+  /**
+   * Remove consumed logs up to a specific line number
+   */
+  private async removeConsumedLogs(sessionId: string, upToLineNumber: number): Promise<void> {
+    try {
+      const { join } = require('path');
+      const { tmpdir } = require('os');
+      const fs = require('fs');
+      
+      const logsFile = join(tmpdir(), 'logpiper', `${sessionId}.logs`);
+      if (!fs.existsSync(logsFile)) {
+        return;
+      }
+
+      // Read all logs
+      const content = fs.readFileSync(logsFile, 'utf8');
+      const lines = content.trim().split('\n').filter((line: string) => line.length > 0);
+      
+      // Filter out consumed logs (those with lineNumber <= upToLineNumber)
+      const remainingLines = lines.filter((line: string) => {
+        try {
+          const logEntry = JSON.parse(line);
+          return logEntry.lineNumber > upToLineNumber;
+        } catch {
+          return true; // Keep malformed lines
+        }
+      });
+
+      // Write back only the remaining logs
+      if (remainingLines.length === 0) {
+        // If no logs remain, delete the file to free up space
+        fs.unlinkSync(logsFile);
+      } else {
+        fs.writeFileSync(logsFile, remainingLines.join('\n') + '\n');
+      }
+
+      console.error(`Removed ${lines.length - remainingLines.length} consumed log entries for session ${sessionId}`);
+    } catch (error) {
+      console.error(`Failed to remove consumed logs for session ${sessionId}:`, error);
+    }
+  }
+
   private startCleanupTimer(): void {
+    // Run initial cleanup on startup
+    this.logManager.cleanup();
+    
+    // Schedule regular cleanups
     setInterval(() => {
       this.logManager.cleanup();
-    }, 60 * 60 * 1000); // Cleanup every hour
+    }, 15 * 60 * 1000); // Cleanup every 15 minutes
   }
 
   async start(): Promise<void> {

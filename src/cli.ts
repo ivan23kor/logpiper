@@ -3,12 +3,13 @@
 import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { resolve } from 'path';
-import { writeFileSync, mkdirSync, existsSync, readFileSync, appendFileSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync, appendFileSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { readFileSync as readPackageJson } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { createInterface } from 'readline';
 import type { LogEntry, LogSession } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -63,6 +64,177 @@ class LogPiperCLI {
     const timestamp = Date.now();
     const random = randomBytes(4).toString('hex');
     return `session_${timestamp}_${random}`;
+  }
+
+  /**
+   * Check for duplicate sessions and offer to close them
+   */
+  private async checkForDuplicateSessions(projectDir: string, commandSignature: string): Promise<void> {
+    if (!existsSync(this.dataDir)) {
+      return;
+    }
+
+    try {
+      const files = readdirSync(this.dataDir);
+      const activeSessions = [];
+
+      for (const file of files) {
+        if (file.endsWith('.json')) {
+          try {
+            const sessionFile = join(this.dataDir, file);
+            const sessionData = JSON.parse(readFileSync(sessionFile, 'utf8'));
+
+            // Only check running sessions
+            if (sessionData.status === 'running' &&
+              sessionData.projectDir === projectDir &&
+              sessionData.metadata?.commandSignature === commandSignature) {
+              activeSessions.push(sessionData);
+            }
+          } catch {
+            // Skip invalid session files
+          }
+        }
+      }
+
+      if (activeSessions.length > 0) {
+        console.log(`\n⚠️  Found ${activeSessions.length} existing session(s) for the same command:`);
+        for (const session of activeSessions) {
+          const age = Date.now() - new Date(session.startTime).getTime();
+          const ageMinutes = Math.floor(age / (1000 * 60));
+          console.log(`  🔗 ${session.id} (${ageMinutes} minutes ago)`);
+        }
+        console.log('\n💡 Multiple sessions may capture duplicate output.');
+        
+        const choice = await this.promptUserForSessionCleanup(activeSessions);
+        await this.handleSessionCleanupChoice(choice, activeSessions);
+      }
+    } catch (error) {
+      // Silently continue if we can't check for duplicates
+    }
+  }
+
+  /**
+   * Prompt user for session cleanup choice
+   */
+  private async promptUserForSessionCleanup(activeSessions: LogSession[]): Promise<string> {
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    return new Promise((resolve) => {
+      const prompt = activeSessions.length === 1 
+        ? '\n❓ Close existing session? (y/N/s): '
+        : '\n❓ Close existing sessions? (y/N/s for select): ';
+      
+      rl.question(prompt, (answer) => {
+        rl.close();
+        resolve(answer.trim().toLowerCase() || 'n');
+      });
+    });
+  }
+
+  /**
+   * Handle user choice for session cleanup
+   */
+  private async handleSessionCleanupChoice(choice: string, activeSessions: LogSession[]): Promise<void> {
+    if (choice === 'y' || choice === 'yes') {
+      // Close all sessions
+      console.log('\n🧹 Closing all existing sessions...');
+      for (const session of activeSessions) {
+        this.closeSession(session.id);
+      }
+      console.log(`✅ Closed ${activeSessions.length} session(s)\n`);
+    } else if (choice === 's' || choice === 'select') {
+      // Allow user to select which sessions to close
+      await this.selectiveSessionCleanup(activeSessions);
+    } else {
+      // Default: continue with existing sessions
+      console.log('📝 Continuing with existing sessions running...\n');
+    }
+  }
+
+  /**
+   * Allow user to selectively close sessions
+   */
+  private async selectiveSessionCleanup(activeSessions: LogSession[]): Promise<void> {
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    console.log('\n📋 Select sessions to close (enter numbers separated by spaces, or "all"):');
+    activeSessions.forEach((session, index) => {
+      const age = Date.now() - new Date(session.startTime).getTime();
+      const ageMinutes = Math.floor(age / (1000 * 60));
+      console.log(`  ${index + 1}. ${session.id} (${ageMinutes} minutes ago)`);
+    });
+
+    return new Promise((resolve) => {
+      rl.question('\n❓ Enter selection: ', (answer) => {
+        rl.close();
+        const selection = answer.trim().toLowerCase();
+        
+        if (selection === 'all') {
+          console.log('\n🧹 Closing all sessions...');
+          for (const session of activeSessions) {
+            this.closeSession(session.id);
+          }
+          console.log(`✅ Closed ${activeSessions.length} session(s)\n`);
+        } else if (selection) {
+          const indices = selection.split(/\s+/)
+            .map(num => parseInt(num) - 1)
+            .filter(idx => idx >= 0 && idx < activeSessions.length);
+          
+          if (indices.length > 0) {
+            console.log(`\n🧹 Closing ${indices.length} selected session(s)...`);
+            for (const idx of indices) {
+              this.closeSession(activeSessions[idx].id);
+            }
+            console.log(`✅ Closed ${indices.length} session(s)\n`);
+          } else {
+            console.log('📝 No valid selections made, continuing...\n');
+          }
+        } else {
+          console.log('📝 No selections made, continuing...\n');
+        }
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Close a specific session by marking it as stopped and cleaning up
+   */
+  private closeSession(sessionId: string): void {
+    try {
+      const sessionFile = join(this.dataDir, `${sessionId}.json`);
+      const logsFile = join(this.dataDir, `${sessionId}.logs`);
+      
+      if (existsSync(sessionFile)) {
+        const session = JSON.parse(readFileSync(sessionFile, 'utf8'));
+        session.status = 'stopped';
+        session.endTime = new Date();
+        session.autoCleanupScheduled = true;
+        writeFileSync(sessionFile, JSON.stringify(session, null, 2));
+        
+        // Schedule cleanup
+        setTimeout(() => {
+          try {
+            if (existsSync(sessionFile)) unlinkSync(sessionFile);
+            if (existsSync(logsFile)) unlinkSync(logsFile);
+          } catch (cleanupError) {
+            if (this.config.verbose) {
+              console.error(`Failed to cleanup session ${sessionId}:`, cleanupError);
+            }
+          }
+        }, 500);
+      }
+    } catch (error) {
+      if (this.config.verbose) {
+        console.error(`Failed to close session ${sessionId}:`, error);
+      }
+    }
   }
 
   private getVersion(): string {
@@ -123,27 +295,27 @@ DOCUMENTATION:
   GitHub: https://github.com/ivan23kor/logpiper-mcp
   
 LogPiper streams command output to MCP tools for real-time error detection 
-and analysis in Claude Code.`);
+and analysis in Claude Code`);
   }
 
   private async installAgent(): Promise<void> {
     const { spawn } = await import('child_process');
     const postinstallScript = join(process.cwd(), 'scripts', 'postinstall.js');
-    
+
     try {
       // Try to find the postinstall script in the module directory
       const moduleDir = resolve(__dirname, '..');
       const scriptPath = join(moduleDir, 'scripts', 'postinstall.js');
-      
+
       const child = spawn('node', [scriptPath], {
         stdio: 'inherit',
         env: { ...process.env, npm_config_global: 'true' }
       });
-      
+
       child.on('close', (code) => {
         process.exit(code || 0);
       });
-      
+
       child.on('error', (error) => {
         console.error('❌ Failed to run agent installer:', error.message);
         console.log('💡 You can manually create ~/.claude/agents/logpiper-monitor.md');
@@ -157,7 +329,7 @@ and analysis in Claude Code.`);
 
   private parseArguments(): { command: string | null, args: string[] } {
     const allArgs = process.argv.slice(2);
-    
+
     // Find the first argument that doesn't start with --
     let commandIndex = -1;
     for (let i = 0; i < allArgs.length; i++) {
@@ -166,19 +338,23 @@ and analysis in Claude Code.`);
         break;
       }
     }
-    
+
     if (commandIndex === -1) {
       return { command: null, args: [] };
     }
-    
+
     const command = allArgs[commandIndex];
     const args = allArgs.slice(commandIndex + 1);
-    
+
     return { command, args };
   }
 
-  private initializeSession(command: string, args: string[]): void {
+  private async initializeSession(command: string, args: string[]): Promise<void> {
     const projectDir = resolve(process.cwd());
+    const commandSignature = `${command} ${args.join(' ')}`;
+
+    // Check for existing sessions with the same command in the same directory
+    await this.checkForDuplicateSessions(projectDir, commandSignature);
 
     this.session = {
       id: this.sessionId,
@@ -189,7 +365,13 @@ and analysis in Claude Code.`);
       status: 'running',
       readCursor: 0,
       errorHistory: [],
-      lastActivity: new Date()
+      lastActivity: new Date(),
+      pid: undefined,
+      metadata: {
+        commandSignature,
+        projectName: projectDir.split(/[/\\]/).pop() || 'unknown',
+        workingDirectory: projectDir
+      }
     };
   }
 
@@ -221,15 +403,30 @@ and analysis in Claude Code.`);
         appendFileSync(logsFile, JSON.stringify(data.data) + '\n');
       }
 
-      // Update session status
-      if (data.type === 'session_end') {
+      // Update session status and schedule cleanup for terminated sessions
+      if (data.type === 'session_end' || data.type === 'session_interrupt' || data.type === 'process_error') {
         const sessionFile = join(this.dataDir, `${this.sessionId}.json`);
         if (existsSync(sessionFile)) {
           const session = JSON.parse(readFileSync(sessionFile, 'utf8'));
-          session.status = 'stopped';
-          session.endTime = data.data.endTime;
+          if (data.type === 'session_end') {
+            // Preserve the status set by the child close handler
+            session.status = this.session.status;
+            session.endTime = data.data.endTime;
+          } else if (data.type === 'process_error') {
+            session.status = 'crashed';
+            session.endTime = new Date();
+          } else if (data.type === 'session_interrupt') {
+            session.status = 'stopped';
+            session.endTime = data.data.timestamp;
+          }
+          session.autoCleanupScheduled = true;
           writeFileSync(sessionFile, JSON.stringify(session, null, 2));
         }
+
+        // Schedule immediate cleanup for terminated sessions
+        setTimeout(() => {
+          this.cleanupTerminatedSession();
+        }, 500); // Short delay to ensure session file is written
       }
 
       if (this.config.verbose) {
@@ -238,6 +435,43 @@ and analysis in Claude Code.`);
     } catch (error) {
       if (this.config.verbose) {
         console.error('Failed to store logpiper data:', error);
+      }
+    }
+  }
+
+  private cleanupTerminatedSession(): void {
+    try {
+      const sessionFile = join(this.dataDir, `${this.sessionId}.json`);
+      const logsFile = join(this.dataDir, `${this.sessionId}.logs`);
+
+      // Check if session is marked for auto cleanup
+      if (existsSync(sessionFile)) {
+        const session = JSON.parse(readFileSync(sessionFile, 'utf8'));
+        if (session.autoCleanupScheduled && session.status !== 'running') {
+          // Remove session and log files
+          try {
+            if (existsSync(sessionFile)) {
+              unlinkSync(sessionFile);
+              if (this.config.verbose) {
+                console.error(`Cleaned up session file: ${sessionFile}`);
+              }
+            }
+            if (existsSync(logsFile)) {
+              unlinkSync(logsFile);
+              if (this.config.verbose) {
+                console.error(`Cleaned up logs file: ${logsFile}`);
+              }
+            }
+          } catch (cleanupError) {
+            if (this.config.verbose) {
+              console.error('Failed to cleanup session files:', cleanupError);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (this.config.verbose) {
+        console.error('Error during session cleanup:', error);
       }
     }
   }
@@ -276,7 +510,7 @@ and analysis in Claude Code.`);
       content,
       timestamp
     }));
-    
+
     this.chunkBuffer.push(...timestampedLines);
     this.chunkLevel = logLevel;
 
@@ -284,7 +518,7 @@ and analysis in Claude Code.`);
     if (this.chunkFlushTimer) {
       clearTimeout(this.chunkFlushTimer);
     }
-    
+
     this.chunkFlushTimer = setTimeout(() => {
       this.flushChunk();
     }, this.chunkTimeThreshold);
@@ -296,25 +530,25 @@ and analysis in Claude Code.`);
     if (dockerComposeMatch) {
       return dockerComposeMatch[1];
     }
-    
+
     // Match other common service patterns like "[service-name]" or "service-name:"
     const serviceBracketMatch = line.match(/^\[([a-zA-Z0-9_-]+)\]/);
     if (serviceBracketMatch) {
       return serviceBracketMatch[1];
     }
-    
+
     const serviceColonMatch = line.match(/^([a-zA-Z0-9_-]+):\s/);
     if (serviceColonMatch) {
       return serviceColonMatch[1];
     }
-    
+
     return null;
   }
 
   private isJsonLikeLine(line: string): boolean {
     const trimmed = line.trim();
-    return (trimmed.startsWith('{') && trimmed.includes('"')) || 
-           (trimmed.includes('"t":{"$date":') && trimmed.includes('"s":'));
+    return (trimmed.startsWith('{') && trimmed.includes('"')) ||
+      (trimmed.includes('"t":{"$date":') && trimmed.includes('"s":'));
   }
 
   private shouldFlushChunk(newLogLevel: 'stdout' | 'stderr', newLines: string[]): boolean {
@@ -342,10 +576,10 @@ and analysis in Claude Code.`);
     // Check for service prefix change (content-based grouping)
     if (newLines.length > 0) {
       const newServicePrefix = this.extractServicePrefix(newLines[0]);
-      
+
       // If we have a current service and new lines have a different service, flush
-      if (this.currentServicePrefix && newServicePrefix && 
-          this.currentServicePrefix !== newServicePrefix) {
+      if (this.currentServicePrefix && newServicePrefix &&
+        this.currentServicePrefix !== newServicePrefix) {
         return true;
       }
     }
@@ -378,8 +612,8 @@ and analysis in Claude Code.`);
   }
 
   private async runPipeMode(): Promise<void> {
-    this.initializeSession('pipe', []);
-    
+    await this.initializeSession('pipe', []);
+
     console.error(`🚀 logpiper pipe mode started`);
     console.error(`📁 Project: ${this.session.projectDir}`);
     console.error(`🔗 Session: ${this.sessionId}`);
@@ -415,7 +649,7 @@ and analysis in Claude Code.`);
 
     process.on('SIGINT', async () => {
       console.error('\n⏹️  Stopping logpiper...');
-      
+
       // Flush any remaining chunk before interrupting
       await this.flushChunk();
 
@@ -427,6 +661,9 @@ and analysis in Claude Code.`);
         }
       });
 
+      // Wait a moment for cleanup to complete
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
       process.exit(0);
     });
   }
@@ -434,19 +671,19 @@ and analysis in Claude Code.`);
   async run(): Promise<void> {
     // Check for special flags first
     const allArgs = process.argv.slice(2);
-    
+
     // Handle help flag
     if (allArgs.includes('--help') || allArgs.includes('-h')) {
       this.showHelp();
       return;
     }
-    
+
     // Handle version flag
     if (allArgs.includes('--version') || allArgs.includes('-V')) {
       console.log(this.getVersion());
       return;
     }
-    
+
     // Handle agent installation
     if (allArgs.includes('--install-agent')) {
       await this.installAgent();
@@ -461,7 +698,7 @@ and analysis in Claude Code.`);
       return;
     }
 
-    this.initializeSession(command, args);
+    await this.initializeSession(command, args);
 
     console.log(`🚀 logpiper starting: ${this.session.command} ${this.session.args.join(' ')}`);
     console.log(`📁 Project: ${this.session.projectDir}`);
@@ -492,7 +729,14 @@ and analysis in Claude Code.`);
       // Flush any remaining chunk before ending session
       await this.flushChunk();
 
-      this.session.status = code === 0 ? 'stopped' : 'crashed';
+      // Distinguish between crashes and graceful terminations
+      // Common signals that indicate graceful shutdown: SIGINT, SIGTERM, SIGHUP
+      const isGracefulShutdown = signal === 'SIGINT' || signal === 'SIGTERM' || signal === 'SIGHUP' ||
+        // Also check for common signal exit codes: 130 (SIGINT), 143 (SIGTERM), 129 (SIGHUP)
+        code === 130 || code === 143 || code === 129;
+      const isSuccess = code === 0;
+      
+      this.session.status = isSuccess || isGracefulShutdown ? 'stopped' : 'crashed';
       this.session.endTime = new Date();
 
       await this.sendToMCPServer({
@@ -505,7 +749,17 @@ and analysis in Claude Code.`);
         }
       });
 
-      console.log(`\n✅ Process ${code === 0 ? 'completed' : 'crashed'} (code: ${code})`);
+      if (isSuccess) {
+        console.log(`\n✅ Process completed successfully (code: ${code})`);
+      } else if (isGracefulShutdown) {
+        console.log(`\n⏹️  Process terminated gracefully by signal ${signal} (code: ${code})`);
+      } else {
+        console.log(`\n❌ Process crashed (code: ${code})`);
+      }
+
+      // Wait a moment for cleanup to complete
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
       process.exit(code || 0);
     });
 
@@ -547,6 +801,11 @@ and analysis in Claude Code.`);
           timestamp: new Date()
         }
       });
+
+      // Wait a moment for cleanup to complete
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      process.exit(0);
     });
   }
 }
